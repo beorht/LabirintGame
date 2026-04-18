@@ -597,10 +597,18 @@ function setupEventListeners() {
         lineNumbers.scrollTop = codeEditor.scrollTop;
     });
 
-    hintButton.addEventListener('click', generateHint);
+    hintButton.addEventListener('click', () => {
+        if (!tutorialModal.classList.contains('hidden')) {
+            // Туториал открыт - закрываем его и добавляем подсказку пути
+            hideTutorial();
+            generateHint();
+        } else {
+            // Туториал закрыт - открываем его
+            showTutorial();
+        }
+    });
     copyButton.addEventListener('click', copyCode);
     document.getElementById('startGameButton').addEventListener('click', hideTutorial);
-    document.getElementById('skipTutorialButton').addEventListener('click', hideTutorial);
 }
 
 // Initialize on page load
@@ -611,9 +619,6 @@ document.addEventListener('DOMContentLoaded', () => {
     updateLineNumbers(-1);
     setupEventListeners();
 
-    if (!localStorage.getItem('tutorialSeen')) {
-        showTutorial();
-    } else {
-        hideTutorial();
-    }
+    // Всегда показываем туториал при входе
+    showTutorial();
 });

@@ -66,51 +66,38 @@
     <!-- Tutorial Modal -->
     <div class="tutorial-modal hidden" id="tutorialModal">
         <div class="tutorial-content">
-            <div class="tutorial-title">🎮 Добро пожаловать в Maze Quest!</div>
+            <div class="tutorial-title">🎮 Maze Quest</div>
 
             <div class="tutorial-section">
-                <div class="tutorial-section-title">📌 Цель игры</div>
-                <div class="tutorial-text">
-                    Напишите программу на JavaScript для управления героем. Пройдите лабиринт от старта (A) до финиша (🚩) и выполните команду <code>hero.finish()</code>.
+                <div class="tutorial-section-title">Как играть</div>
+                <div class="tutorial-text" style="font-size: 18px; line-height: 1.8;">
+                    Напишите команды для управления героем. Дойдите до финиша 🚩 и вызовите <code>hero.finish()</code>
                 </div>
             </div>
 
             <div class="tutorial-section">
-                <div class="tutorial-section-title">⌨️ Доступные команды</div>
-                <div class="tutorial-code">hero.up();</div>
-                <div class="tutorial-text">Движение вверх на одну клетку</div>
-
-                <div class="tutorial-code">hero.down();</div>
-                <div class="tutorial-text">Движение вниз на одну клетку</div>
-
-                <div class="tutorial-code">hero.left();</div>
-                <div class="tutorial-text">Движение влево на одну клетку</div>
-
-                <div class="tutorial-code">hero.right();</div>
-                <div class="tutorial-text">Движение вправо на одну клетку</div>
-
-                <div class="tutorial-code">hero.finish();</div>
-                <div class="tutorial-text">Завершить путь (используй только на финише!)</div>
+                <div class="tutorial-section-title">Команды</div>
+                <div class="tutorial-code" style="font-size: 16px; line-height: 1.8;">
+hero.down() → шаг вниз<br>
+hero.up() → шаг вверх<br>
+hero.left() → шаг влево<br>
+hero.right() → шаг вправо<br>
+hero.finish() → завершить путь
+                </div>
             </div>
 
             <div class="tutorial-section">
-                <div class="tutorial-section-title">🎯 Советы</div>
-                <ul class="tutorial-list">
-                    <li>✨ Собирай монеты (★) для бонусов</li>
-                    <li>⚠️ Избегай ловушек (✕) - штраф +5 шагов</li>
-                    <li>💡 Используй подсказку для первых 5 шагов</li>
-                    <li>📊 Минимизируй шаги и время для лучшего результата</li>
-                </ul>
-            </div>
-
-            <div class="tutorial-section">
-                <div class="tutorial-section-title">📝 Пример кода</div>
-                <div class="tutorial-code">hero.down();<br>hero.left();<br>hero.up();<br>hero.finish();</div>
+                <div class="tutorial-section-title">Элементы</div>
+                <div class="tutorial-text" style="font-size: 18px; line-height: 1.8;">
+                    ★ = монеты<br>
+                    ✕ = ловушки (+5 шагов)<br>
+                    A = старт<br>
+                    🚩 = финиш
+                </div>
             </div>
 
             <div class="tutorial-buttons">
                 <button class="btn-primary" id="startGameButton">Начать игру 🚀</button>
-                <button class="btn-tertiary" id="skipTutorialButton">Пропустить</button>
             </div>
         </div>
     </div>
