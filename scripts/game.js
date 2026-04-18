@@ -1,6 +1,6 @@
 // Game constants
 const GRID_SIZE = 14;
-const CELL_SIZE = 45;
+const CELL_SIZE = 50;
 const EXECUTION_DELAY = 300;
 
 // Game state
