@@ -1,6 +1,6 @@
 // Game constants
 const GRID_SIZE = 14;
-const CELL_SIZE = 40;
+const CELL_SIZE = 60;
 const EXECUTION_DELAY = 300;
 
 // Game state
@@ -24,9 +24,13 @@ const gameState = {
 };
 
 // DOM elements
-let canvas, ctx, codeEditor, lineNumbers, copyButton, runButton, stopButton, resetButton;
+let canvas, ctx, codeEditor, lineNumbers, copyButton, runButton, resetButton;
 let hintButton, gameMessage, logsContent, victoryModal, tutorialModal;
 let stepCountDisplay, timerDisplay, levelDisplay, coinCountDisplay, lineCountDisplay;
+let uploadCharacterButton, characterInput;
+
+// Custom character
+let customCharacterImage = null;
 
 // Initialize DOM elements
 function initDOM() {
@@ -36,7 +40,6 @@ function initDOM() {
     lineNumbers = document.getElementById('lineNumbers');
     copyButton = document.getElementById('copyButton');
     runButton = document.getElementById('runButton');
-    stopButton = document.getElementById('stopButton');
     resetButton = document.getElementById('resetButton');
     hintButton = document.getElementById('hintButtonHUD');
     gameMessage = document.getElementById('gameMessage');
@@ -49,8 +52,18 @@ function initDOM() {
     coinCountDisplay = document.getElementById('coinCount');
     lineCountDisplay = document.getElementById('lineCount');
 
+    uploadCharacterButton = document.getElementById('uploadCharacterButton');
+    characterInput = document.getElementById('characterInput');
+
     canvas.width = GRID_SIZE * CELL_SIZE;
     canvas.height = GRID_SIZE * CELL_SIZE;
+
+    // Load custom character from localStorage
+    const savedCharacter = localStorage.getItem('customCharacter');
+    if (savedCharacter) {
+        customCharacterImage = new Image();
+        customCharacterImage.src = savedCharacter;
+    }
 }
 
 // Theme management
@@ -183,10 +196,20 @@ function draw() {
     ctx.fillText('🚩', gameState.finishX * CELL_SIZE + CELL_SIZE / 2, gameState.finishY * CELL_SIZE + CELL_SIZE / 2);
 
     // Draw player
-    ctx.fillStyle = getColor('--player-color');
-    ctx.beginPath();
-    ctx.arc(gameState.playerX * CELL_SIZE + CELL_SIZE / 2, gameState.playerY * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE / 3, 0, Math.PI * 2);
-    ctx.fill();
+    const playerX = gameState.playerX * CELL_SIZE;
+    const playerY = gameState.playerY * CELL_SIZE;
+
+    if (customCharacterImage && customCharacterImage.complete) {
+        // Draw custom character image
+        const padding = CELL_SIZE / 6;
+        ctx.drawImage(customCharacterImage, playerX + padding, playerY + padding, CELL_SIZE - padding * 2, CELL_SIZE - padding * 2);
+    } else {
+        // Draw default circle
+        ctx.fillStyle = getColor('--player-color');
+        ctx.beginPath();
+        ctx.arc(playerX + CELL_SIZE / 2, playerY + CELL_SIZE / 2, CELL_SIZE / 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
 
     // Draw grid lines
     ctx.strokeStyle = getColor('--border-color');
@@ -330,7 +353,6 @@ async function executeCode() {
 
     gameState.isRunning = true;
     runButton.disabled = true;
-    stopButton.disabled = false;
     clearMessage();
     clearLogs();
     startTimer();
@@ -408,7 +430,6 @@ async function executeCode() {
     if (gameState.isRunning === false && !victoryModal.classList.contains('active')) {
         gameState.isRunning = false;
         runButton.disabled = false;
-        stopButton.disabled = true;
     }
 }
 
@@ -463,7 +484,6 @@ function stopExecution() {
     gameState.currentCommandIndex = -1;
     updateLineNumbers(-1);
     runButton.disabled = false;
-    stopButton.disabled = true;
     addLog('Выполнение остановлено пользователем', 'info');
 }
 
@@ -565,7 +585,6 @@ function insertCodeIntoEditor(code) {
 // Event listeners setup
 function setupEventListeners() {
     runButton.addEventListener('click', executeCode);
-    stopButton.addEventListener('click', stopExecution);
     resetButton.addEventListener('click', () => {
         gameState.playerX = gameState.startX;
         gameState.playerY = gameState.startY;
@@ -582,6 +601,13 @@ function setupEventListeners() {
         updateUI();
         draw();
         addLog('Персонаж сброшен на стартовую позицию', 'info');
+    });
+
+    // Keyboard shortcut for stopping execution (Escape key)
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && gameState.isRunning) {
+            stopExecution();
+        }
     });
     document.getElementById('nextLevelButton').addEventListener('click', nextLevel);
     document.getElementById('restartButton').addEventListener('click', restartLevel);
@@ -609,6 +635,34 @@ function setupEventListeners() {
     });
     copyButton.addEventListener('click', copyCode);
     document.getElementById('startGameButton').addEventListener('click', hideTutorial);
+
+    // Character upload
+    uploadCharacterButton.addEventListener('click', () => {
+        characterInput.click();
+    });
+
+    characterInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const img = new Image();
+            img.onload = () => {
+                customCharacterImage = img;
+                localStorage.setItem('customCharacter', event.target.result);
+                draw();
+                showMessage('✓ Персонаж загружен!', 'success');
+                addLog('Персонаж успешно загружен', 'success');
+            };
+            img.onerror = () => {
+                showMessage('Ошибка загрузки изображения', 'error');
+                addLog('Error: Не удалось загрузить изображение', 'error');
+            };
+            img.src = event.target.result;
+        };
+        reader.readAsDataURL(file);
+    });
 }
 
 // Initialize on page load

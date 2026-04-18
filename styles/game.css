@@ -133,9 +133,9 @@ canvas {
 }
 
 .game-message.success {
-    color: var(--start-color);
+    color: #c5c9c6;
     background-color: rgba(29, 158, 117, 0.1);
-    border-color: var(--start-color);
+    border-color: #c5c9c6;
 }
 
 .game-message.info {
@@ -345,7 +345,7 @@ button {
 }
 
 .log-entry.success {
-    color: var(--start-color);
+    color: #c5c9c6;
 }
 
 .log-entry.error {
