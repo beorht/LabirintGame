@@ -593,8 +593,6 @@ function setupEventListeners() {
         gameState.isRunning = false;
         if (gameState.timerInterval) stopTimer();
         runButton.disabled = false;
-        stopButton.disabled = true;
-        clearLogs();
         clearMessage();
         gameState.currentCommandIndex = -1;
         updateLineNumbers(-1);
