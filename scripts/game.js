@@ -2,6 +2,7 @@
 const GRID_SIZE = 14;
 const CELL_SIZE = 50;
 const EXECUTION_DELAY = 300;
+const EDITOR_CELL_SIZE = 40;
 
 // Game state
 const gameState = {
@@ -20,7 +21,22 @@ const gameState = {
     isRunning: false,
     currentCommandIndex: 0,
     timer: 0,
-    timerInterval: null
+    timerInterval: null,
+    isCustomLevel: false
+};
+
+// Editor state
+const editorState = {
+    maze: [],
+    traps: new Set(),
+    coins: new Set(),
+    startX: 1,
+    startY: 1,
+    finishX: 10,
+    finishY: 3,
+    currentTool: 'path',
+    isDrawing: false,
+    initialized: false
 };
 
 // DOM elements
@@ -28,6 +44,9 @@ let canvas, ctx, codeEditor, lineNumbers, copyButton, runButton, resetButton;
 let hintButton, gameMessage, logsContent, victoryModal, tutorialModal;
 let stepCountDisplay, timerDisplay, levelDisplay, coinCountDisplay, lineCountDisplay;
 let uploadCharacterButton, characterInput;
+let editorModal, editorCanvas, editorCtx, editorMessage, editorButton, editorCloseBtn;
+let editorPlayBtn, editorSaveBtn, editorClearBtn;
+let mapNameInput, mapsList;
 
 // Custom character
 let customCharacterImage = null;
@@ -55,8 +74,23 @@ function initDOM() {
     uploadCharacterButton = document.getElementById('uploadCharacterButton');
     characterInput = document.getElementById('characterInput');
 
+    editorModal = document.getElementById('editorModal');
+    editorCanvas = document.getElementById('editorCanvas');
+    editorCtx = editorCanvas.getContext('2d');
+    editorMessage = document.getElementById('editorMessage');
+    editorButton = document.getElementById('editorButton');
+    editorCloseBtn = document.getElementById('editorCloseBtn');
+    editorPlayBtn = document.getElementById('editorPlayBtn');
+    editorSaveBtn = document.getElementById('editorSaveBtn');
+    editorLoadBtn = document.getElementById('editorLoadBtn');
+    editorClearBtn = document.getElementById('editorClearBtn');
+    mapNameInput = document.getElementById('mapNameInput');
+    mapsList = document.getElementById('mapsList');
+
     canvas.width = GRID_SIZE * CELL_SIZE;
     canvas.height = GRID_SIZE * CELL_SIZE;
+    editorCanvas.width = GRID_SIZE * EDITOR_CELL_SIZE;
+    editorCanvas.height = GRID_SIZE * EDITOR_CELL_SIZE;
 
     // Load custom character from localStorage
     const savedCharacter = localStorage.getItem('customCharacter');
@@ -92,6 +126,18 @@ function initGame() {
 }
 
 function generateMaze() {
+    if (gameState.isCustomLevel) {
+        const data = JSON.parse(localStorage.getItem('customLevel'));
+        gameState.maze = data.maze.map(row => [...row]);
+        gameState.startX = data.startX;
+        gameState.startY = data.startY;
+        gameState.playerX = data.startX;
+        gameState.playerY = data.startY;
+        gameState.finishX = data.finishX;
+        gameState.finishY = data.finishY;
+        return;
+    }
+
     const mazeTemplate = [
         [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
@@ -114,6 +160,13 @@ function generateMaze() {
 }
 
 function placeObstacles() {
+    if (gameState.isCustomLevel) {
+        const data = JSON.parse(localStorage.getItem('customLevel'));
+        gameState.traps = new Set(data.traps);
+        gameState.collectedCoins = new Set(data.coins);
+        return;
+    }
+
     const trapCount = gameState.level === 1 ? 1 : 4 + (gameState.level * 2);
     const coinCount = gameState.level === 1 ? 2 : 5;
     const passableCells = [];
@@ -496,6 +549,7 @@ function showVictoryModal() {
 }
 
 function nextLevel() {
+    gameState.isCustomLevel = false;
     gameState.level++;
     victoryModal.classList.remove('active');
     codeEditor.value = '';
@@ -582,6 +636,376 @@ function insertCodeIntoEditor(code) {
     updateLineNumbers(-1);
 }
 
+// Level Editor Functions
+function openLevelEditor() {
+    editorModal.classList.remove('hidden');
+    if (!editorState.initialized) {
+        initEditorCanvas();
+        if (localStorage.getItem('customLevel')) {
+            loadCustomLevelIntoEditor();
+        } else {
+            clearEditorMaze();
+        }
+        editorState.initialized = true;
+    }
+    loadMapsFromServer();
+}
+
+function closeLevelEditor() {
+    editorModal.classList.add('hidden');
+}
+
+function initEditorCanvas() {
+    editorCanvas.addEventListener('mousedown', handleEditorMouseDown);
+    editorCanvas.addEventListener('mousemove', handleEditorMouseMove);
+    editorCanvas.addEventListener('mouseup', handleEditorMouseUp);
+    editorCanvas.addEventListener('mouseleave', handleEditorMouseLeave);
+}
+
+function clearEditorMaze() {
+    editorState.maze = [];
+    for (let y = 0; y < GRID_SIZE; y++) {
+        editorState.maze[y] = [];
+        for (let x = 0; x < GRID_SIZE; x++) {
+            if (x === 0 || x === GRID_SIZE - 1 || y === 0 || y === GRID_SIZE - 1) {
+                editorState.maze[y][x] = 1;
+            } else {
+                editorState.maze[y][x] = 0;
+            }
+        }
+    }
+    editorState.startX = 1;
+    editorState.startY = 1;
+    editorState.finishX = 10;
+    editorState.finishY = 3;
+    editorState.traps = new Set();
+    editorState.coins = new Set();
+    editorMessage.textContent = '';
+    editorMessage.className = 'editor-message';
+    drawEditorMaze();
+}
+
+function drawEditorMaze() {
+    editorCtx.fillStyle = getColor('--path-color');
+    editorCtx.fillRect(0, 0, editorCanvas.width, editorCanvas.height);
+
+    for (let y = 0; y < GRID_SIZE; y++) {
+        for (let x = 0; x < GRID_SIZE; x++) {
+            if (editorState.maze[y][x] === 1) {
+                editorCtx.fillStyle = getColor('--wall-color');
+                editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
+            }
+        }
+    }
+
+    editorState.traps.forEach(trap => {
+        const [x, y] = trap.split(',').map(Number);
+        editorCtx.fillStyle = getColor('--trap-color');
+        editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
+        editorCtx.fillStyle = getColor('--text-primary');
+        editorCtx.font = '16px Arial';
+        editorCtx.textAlign = 'center';
+        editorCtx.textBaseline = 'middle';
+        editorCtx.fillText('✕', x * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, y * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
+    });
+
+    editorState.coins.forEach(coin => {
+        const [x, y] = coin.split(',').map(Number);
+        editorCtx.fillStyle = getColor('--coin-color');
+        editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
+        editorCtx.fillStyle = getColor('--text-primary');
+        editorCtx.font = '14px Arial';
+        editorCtx.textAlign = 'center';
+        editorCtx.textBaseline = 'middle';
+        editorCtx.fillText('★', x * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, y * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
+    });
+
+    editorCtx.fillStyle = getColor('--start-color');
+    editorCtx.fillRect(editorState.startX * EDITOR_CELL_SIZE, editorState.startY * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
+    editorCtx.fillStyle = getColor('--bg-secondary');
+    editorCtx.font = 'bold 14px Arial';
+    editorCtx.textAlign = 'center';
+    editorCtx.textBaseline = 'middle';
+    editorCtx.fillText('A', editorState.startX * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, editorState.startY * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
+
+    editorCtx.fillStyle = getColor('--finish-color');
+    editorCtx.fillRect(editorState.finishX * EDITOR_CELL_SIZE, editorState.finishY * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
+    editorCtx.fillStyle = getColor('--bg-secondary');
+    editorCtx.font = '16px Arial';
+    editorCtx.textAlign = 'center';
+    editorCtx.textBaseline = 'middle';
+    editorCtx.fillText('🚩', editorState.finishX * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, editorState.finishY * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
+
+    editorCtx.strokeStyle = getColor('--border-color');
+    editorCtx.lineWidth = 1;
+    for (let i = 0; i <= GRID_SIZE; i++) {
+        editorCtx.beginPath();
+        editorCtx.moveTo(i * EDITOR_CELL_SIZE, 0);
+        editorCtx.lineTo(i * EDITOR_CELL_SIZE, editorCanvas.height);
+        editorCtx.stroke();
+        editorCtx.beginPath();
+        editorCtx.moveTo(0, i * EDITOR_CELL_SIZE);
+        editorCtx.lineTo(editorCanvas.width, i * EDITOR_CELL_SIZE);
+        editorCtx.stroke();
+    }
+}
+
+function getCellFromEvent(e) {
+    const rect = editorCanvas.getBoundingClientRect();
+    const scrollParent = editorCanvas.parentElement.parentElement; // editor-modal-content
+    const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
+    const scrollY = scrollParent ? scrollParent.scrollTop : 0;
+
+    // Учитываем DPI масштабирование
+    const dpiX = editorCanvas.width / rect.width;
+    const dpiY = editorCanvas.height / rect.height;
+
+    const x = Math.floor((e.clientX - rect.left + scrollX) * dpiX / EDITOR_CELL_SIZE);
+    const y = Math.floor((e.clientY - rect.top + scrollY) * dpiY / EDITOR_CELL_SIZE);
+
+    console.log(`Canvas internal: ${editorCanvas.width}x${editorCanvas.height}, Display: ${rect.width}x${rect.height}, DPI: [${dpiX.toFixed(2)}, ${dpiY.toFixed(2)}], Cell: [${x}, ${y}]`);
+    return { x, y };
+}
+
+function handleEditorMouseDown(e) {
+    editorState.isDrawing = true;
+    const { x, y } = getCellFromEvent(e);
+    applyEditorTool(x, y);
+}
+
+function handleEditorMouseMove(e) {
+    if (editorState.isDrawing) {
+        const { x, y } = getCellFromEvent(e);
+        applyEditorTool(x, y);
+    }
+}
+
+function handleEditorMouseUp() {
+    editorState.isDrawing = false;
+}
+
+function handleEditorMouseLeave() {
+    editorState.isDrawing = false;
+}
+
+function applyEditorTool(cellX, cellY) {
+    console.log(`applyEditorTool: [${cellX}, ${cellY}], Tool: ${editorState.currentTool}`);
+
+    if (cellX < 0 || cellX >= GRID_SIZE || cellY < 0 || cellY >= GRID_SIZE) {
+        console.warn(`Out of bounds: [${cellX}, ${cellY}]`);
+        return;
+    }
+
+    const tool = editorState.currentTool;
+
+    if (tool === 'wall') {
+        editorState.maze[cellY][cellX] = 1;
+        editorState.traps.delete(`${cellX},${cellY}`);
+        editorState.coins.delete(`${cellX},${cellY}`);
+    } else if (tool === 'path') {
+        editorState.maze[cellY][cellX] = 0;
+        editorState.traps.delete(`${cellX},${cellY}`);
+        editorState.coins.delete(`${cellX},${cellY}`);
+    } else if (tool === 'start') {
+        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
+        editorState.startX = cellX;
+        editorState.startY = cellY;
+        editorState.maze[cellY][cellX] = 0;
+        editorState.traps.delete(`${cellX},${cellY}`);
+        editorState.coins.delete(`${cellX},${cellY}`);
+    } else if (tool === 'finish') {
+        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
+        editorState.finishX = cellX;
+        editorState.finishY = cellY;
+        editorState.maze[cellY][cellX] = 0;
+        editorState.traps.delete(`${cellX},${cellY}`);
+        editorState.coins.delete(`${cellX},${cellY}`);
+    } else if (tool === 'trap') {
+        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
+        if (editorState.maze[cellY][cellX] === 0 &&
+            !(cellX === editorState.startX && cellY === editorState.startY) &&
+            !(cellX === editorState.finishX && cellY === editorState.finishY)) {
+            editorState.traps.add(`${cellX},${cellY}`);
+            editorState.coins.delete(`${cellX},${cellY}`);
+        }
+    } else if (tool === 'coin') {
+        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
+        if (editorState.maze[cellY][cellX] === 0 &&
+            !(cellX === editorState.startX && cellY === editorState.startY) &&
+            !(cellX === editorState.finishX && cellY === editorState.finishY)) {
+            editorState.coins.add(`${cellX},${cellY}`);
+            editorState.traps.delete(`${cellX},${cellY}`);
+        }
+    }
+
+    drawEditorMaze();
+}
+
+function validateEditorMaze() {
+    const savedMaze = gameState.maze;
+    gameState.maze = editorState.maze.map(row => [...row]);
+    const path = bfs(editorState.startX, editorState.startY, editorState.finishX, editorState.finishY);
+    gameState.maze = savedMaze;
+    return path !== null && path.length > 0;
+}
+
+async function saveCustomLevel() {
+    if (!validateEditorMaze()) {
+        editorMessage.textContent = '❌ Нет пути от стартовой позиции до финиша!';
+        editorMessage.className = 'editor-message error';
+        return false;
+    }
+
+    const name = mapNameInput.value.trim() || `Map ${new Date().toLocaleString('ru')}`;
+    const data = {
+        name,
+        maze: editorState.maze,
+        startX: editorState.startX,
+        startY: editorState.startY,
+        finishX: editorState.finishX,
+        finishY: editorState.finishY,
+        traps: Array.from(editorState.traps),
+        coins: Array.from(editorState.coins)
+    };
+
+    localStorage.setItem('customLevel', JSON.stringify(data));
+
+    try {
+        const res = await fetch('/api/maps', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+
+        if (res.ok) {
+            editorMessage.textContent = '✅ Карта сохранена!';
+            editorMessage.className = 'editor-message success';
+            mapNameInput.value = name;
+            loadMapsFromServer();
+            return true;
+        } else {
+            editorMessage.textContent = '❌ Ошибка сохранения на сервер';
+            editorMessage.className = 'editor-message error';
+            return false;
+        }
+    } catch (err) {
+        editorMessage.textContent = '❌ Ошибка соединения с сервером';
+        editorMessage.className = 'editor-message error';
+        return false;
+    }
+}
+
+function loadCustomLevelIntoEditor() {
+    const saved = localStorage.getItem('customLevel');
+    if (!saved) {
+        clearEditorMaze();
+        return;
+    }
+
+    const data = JSON.parse(saved);
+    editorState.maze = data.maze.map(row => [...row]);
+    editorState.startX = data.startX;
+    editorState.startY = data.startY;
+    editorState.finishX = data.finishX;
+    editorState.finishY = data.finishY;
+    editorState.traps = new Set(data.traps);
+    editorState.coins = new Set(data.coins);
+    editorMessage.textContent = '✅ Уровень загружен!';
+    editorMessage.className = 'editor-message success';
+    drawEditorMaze();
+}
+
+async function loadMapsFromServer() {
+    mapsList.innerHTML = '<div class="maps-loading">Загрузка...</div>';
+    try {
+        const res = await fetch('/api/maps');
+        if (!res.ok) {
+            mapsList.innerHTML = '<div class="maps-empty">Ошибка загрузки карт</div>';
+            return;
+        }
+        const maps = await res.json();
+        if (maps.length === 0) {
+            mapsList.innerHTML = '<div class="maps-empty">Нет сохранённых карт</div>';
+            return;
+        }
+        mapsList.innerHTML = maps.map(m => `
+            <div class="map-item">
+                <div class="map-item-name">${escapeHtml(m.name)}</div>
+                <div class="map-item-date">${new Date(m.createdAt).toLocaleString('ru')}</div>
+                <div class="map-item-actions">
+                    <button class="btn-tertiary" onclick="loadMapFromServer('${m.id}')">📂 Загр.</button>
+                    <button class="btn-tertiary" onclick="playMapFromServer('${m.id}')">▶ Играть</button>
+                    <button class="btn-tertiary" onclick="deleteMapFromServer('${m.id}')">🗑 Удал.</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (err) {
+        mapsList.innerHTML = '<div class="maps-empty">Ошибка загрузки карт</div>';
+    }
+}
+
+async function loadMapFromServer(id) {
+    try {
+        const res = await fetch(`/api/maps/${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        editorState.maze = data.maze.map(row => [...row]);
+        editorState.startX = data.startX;
+        editorState.startY = data.startY;
+        editorState.finishX = data.finishX;
+        editorState.finishY = data.finishY;
+        editorState.traps = new Set(data.traps);
+        editorState.coins = new Set(data.coins);
+        mapNameInput.value = data.name;
+        drawEditorMaze();
+        editorMessage.textContent = `✅ Карта "${escapeHtml(data.name)}" загружена!`;
+        editorMessage.className = 'editor-message success';
+    } catch (err) {
+        editorMessage.textContent = '❌ Ошибка загрузки карты';
+        editorMessage.className = 'editor-message error';
+    }
+}
+
+async function playMapFromServer(id) {
+    try {
+        const res = await fetch(`/api/maps/${id}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        localStorage.setItem('customLevel', JSON.stringify(data));
+        gameState.isCustomLevel = true;
+        closeLevelEditor();
+        codeEditor.value = '';
+        initGame();
+    } catch (err) {
+        editorMessage.textContent = '❌ Ошибка запуска карты';
+        editorMessage.className = 'editor-message error';
+    }
+}
+
+async function deleteMapFromServer(id) {
+    try {
+        await fetch(`/api/maps/${id}`, { method: 'DELETE' });
+        loadMapsFromServer();
+    } catch (err) {
+        editorMessage.textContent = '❌ Ошибка удаления карты';
+        editorMessage.className = 'editor-message error';
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+async function playCustomLevel() {
+    if (!await saveCustomLevel()) return;
+    gameState.isCustomLevel = true;
+    closeLevelEditor();
+    codeEditor.value = '';
+    initGame();
+}
+
 // Event listeners setup
 function setupEventListeners() {
     runButton.addEventListener('click', executeCode);
@@ -660,6 +1084,21 @@ function setupEventListeners() {
             img.src = event.target.result;
         };
         reader.readAsDataURL(file);
+    });
+
+    // Level Editor
+    editorButton.addEventListener('click', openLevelEditor);
+    editorCloseBtn.addEventListener('click', closeLevelEditor);
+    editorPlayBtn.addEventListener('click', playCustomLevel);
+    editorSaveBtn.addEventListener('click', saveCustomLevel);
+    editorClearBtn.addEventListener('click', clearEditorMaze);
+
+    document.querySelectorAll('.tool-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            editorState.currentTool = btn.dataset.tool;
+        });
     });
 }
 

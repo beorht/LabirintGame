@@ -28,6 +28,7 @@
             </div>
             <button class="btn-tertiary" id="hintButtonHUD">💡 Подсказка</button>
             <button class="btn-tertiary" id="uploadCharacterButton">🎨 Персонаж</button>
+            <button class="btn-tertiary" id="editorButton">🔧 Редактор</button>
             <input type="file" id="characterInput" accept="image/png" style="display: none;">
         </div>
 
@@ -59,6 +60,46 @@
                 <div class="logs-panel">
                     <div class="logs-header">📋 Логи</div>
                     <div class="logs-content" id="logsContent"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Level Editor Modal -->
+    <div class="editor-modal hidden" id="editorModal">
+        <div class="editor-modal-content">
+            <div class="editor-modal-header">
+                <h2>🔧 Конструктор уровней</h2>
+                <button class="editor-close-btn" id="editorCloseBtn">✕</button>
+            </div>
+            <div class="editor-body">
+                <canvas id="editorCanvas"></canvas>
+                <div class="editor-sidebar">
+                    <div class="editor-tools">
+                        <h3>Инструменты</h3>
+                        <button class="tool-btn active" data-tool="path">□ Путь</button>
+                        <button class="tool-btn" data-tool="wall">■ Стена</button>
+                        <button class="tool-btn" data-tool="start">A Старт</button>
+                        <button class="tool-btn" data-tool="finish">🚩 Финиш</button>
+                        <button class="tool-btn" data-tool="trap">✕ Ловушка</button>
+                        <button class="tool-btn" data-tool="coin">★ Монета</button>
+                    </div>
+                    <div class="editor-name-row">
+                        <input type="text" id="mapNameInput" placeholder="Название карты..." maxlength="40">
+                    </div>
+                    <div class="editor-actions">
+                        <button class="btn-primary" id="editorPlayBtn">▶ Играть</button>
+                        <button class="btn-tertiary" id="editorSaveBtn">💾 Сохранить</button>
+                        <button class="btn-tertiary" id="editorClearBtn">🗑 Очистить</button>
+                    </div>
+                    <div class="editor-message" id="editorMessage"></div>
+
+                    <div class="editor-maps-section">
+                        <h3>Мои карты</h3>
+                        <div class="maps-list" id="mapsList">
+                            <div class="maps-empty">Нет сохранённых карт</div>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
