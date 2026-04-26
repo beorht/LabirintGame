@@ -182,8 +182,8 @@ canvas {
 }
 
 .copy-button {
-    padding: 4px 8px;
-    font-size: 11px;
+    padding: 6px 8px;
+    font-size: 14px;
 }
 
 .code-editor-wrapper {
@@ -420,11 +420,15 @@ button {
     font-size: 24px;
     cursor: pointer;
     color: var(--text-primary);
-    padding: 0 10px;
+    padding: 8px 10px;
     margin-left: auto;
-    width: 40px;
+    width: auto;
+    min-width: 0;
     flex: 0 0 auto;
-    min-width: auto;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .editor-close-btn:hover {
