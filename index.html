@@ -4,89 +4,124 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Maze Quest - Образовательная платформа программирования</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
     <link rel="stylesheet" href="styles/game.css">
 </head>
 <body>
     <div class="container">
         <!-- Header / HUD -->
-        <div class="hud">
-            <div class="hud-stat">
-                <span class="hud-stat-label">Шаги:</span>
-                <span class="hud-stat-value" id="stepCount">0</span>
+        <header class="hud">
+            <div class="brand">
+                <span class="brand-logo">🧭</span>
+                <span class="brand-name">Maze Quest</span>
             </div>
-            <div class="hud-stat">
-                <span class="hud-stat-label">Время:</span>
-                <span class="hud-stat-value" id="timerDisplay">0:00</span>
+            <div class="hud-stats">
+                <div class="hud-stat" title="Шаги (ловушка +5)">
+                    <span class="hud-stat-icon">👣</span>
+                    <span class="hud-stat-label">Шаги</span>
+                    <span class="hud-stat-value" id="stepCount">0</span>
+                </div>
+                <div class="hud-stat" title="Время">
+                    <span class="hud-stat-icon">⏱</span>
+                    <span class="hud-stat-label">Время</span>
+                    <span class="hud-stat-value" id="timerDisplay">0:00</span>
+                </div>
+                <div class="hud-stat" title="Уровень">
+                    <span class="hud-stat-icon">🏁</span>
+                    <span class="hud-stat-label">Уровень</span>
+                    <span class="hud-stat-value"><span id="levelDisplay">1</span><span class="hud-stat-total" id="levelSize">14×14</span></span>
+                </div>
+                <div class="hud-stat" title="Монеты">
+                    <span class="hud-stat-icon">🪙</span>
+                    <span class="hud-stat-label">Монеты</span>
+                    <span class="hud-stat-value"><span id="coinCount">0</span><span class="hud-stat-total">/<span id="coinTotal">0</span></span></span>
+                </div>
             </div>
-            <div class="hud-stat">
-                <span class="hud-stat-label">Уровень:</span>
-                <span class="hud-stat-value" id="levelDisplay">1</span>
+            <div class="hud-actions">
+                <button class="btn-tertiary player-button" id="playerButton" title="Сменить игрока">👤 Игрок</button>
+                <button class="btn-tertiary" id="hintButton" title="Добавить следующие шаги к коду">💡 Подсказка</button>
+                <button class="btn-tertiary" id="helpButton" title="Как играть">❓ Помощь</button>
+                <button class="btn-tertiary" id="uploadCharacterButton" title="Загрузить PNG персонажа">🎨 Персонаж</button>
+                <button class="btn-tertiary" id="editorButton" title="Конструктор уровней">🔧 Редактор</button>
+                <button class="btn-tertiary btn-icon" id="settingsButton" title="Настройки">⚙️</button>
+                <button class="btn-tertiary btn-icon" id="themeButton" title="Сменить тему">🌙</button>
+                <input type="file" id="characterInput" accept="image/png" hidden>
             </div>
-            <div class="hud-stat">
-                <span class="hud-stat-label">Монеты:</span>
-                <span class="hud-stat-value" id="coinCount">0</span>
-            </div>
-            <button class="btn-tertiary" id="hintButtonHUD">💡 Подсказка</button>
-            <button class="btn-tertiary" id="uploadCharacterButton">🎨 Персонаж</button>
-            <button class="btn-tertiary" id="editorButton">🔧 Редактор</button>
-            <input type="file" id="characterInput" accept="image/png" style="display: none;">
-        </div>
+        </header>
 
         <!-- Main content -->
-        <div class="content">
+        <main class="content">
             <!-- Game canvas area -->
-            <div class="game-area">
-                <canvas id="gameCanvas"></canvas>
-                <div class="game-message" id="gameMessage"></div>
-            </div>
+            <section class="game-area">
+                <div class="level-banner">
+                    <div class="level-title" id="levelTitle"></div>
+                    <div class="level-goal" id="levelGoal"></div>
+                    <div class="level-tags" id="levelTags"></div>
+                </div>
+                <div class="board-frame">
+                    <canvas id="gameCanvas"></canvas>
+                </div>
+                <div class="game-message" id="gameMessage" role="status"></div>
+            </section>
 
             <!-- Code editor area -->
-            <div class="editor-area">
+            <section class="editor-area">
                 <div class="editor-header">
                     <span class="editor-label">Код</span>
-                    <span class="code-counter"><span id="lineCount">0</span> строк</span>
-                </div>
-                <div class="editor-top-controls">
-                    <button class="btn-tertiary copy-button" id="copyButton">📋 Копировать</button>
+                    <span class="code-counter" id="codeCounter" title="Строк кода без пустых строк и комментариев"><span id="lineCount">0</span><span id="lineLimit"></span> строк</span>
+                    <button class="btn-tertiary btn-small" id="copyButton">📋 Копировать</button>
                 </div>
                 <div class="code-editor-wrapper">
                     <div class="line-numbers" id="lineNumbers"></div>
-                    <textarea id="codeEditor" placeholder="Write code here.... ;)"></textarea>
+                    <div class="exec-highlight" id="execHighlight"></div>
+                    <textarea id="codeEditor" spellcheck="false" autocomplete="off" placeholder="hero.right();&#10;hero.down();&#10;// Ctrl+Enter — запустить, Tab — отступ"></textarea>
                 </div>
                 <div class="editor-controls">
                     <button class="btn-primary" id="runButton">▶ Выполнить</button>
                     <button class="btn-tertiary" id="resetButton">↻ Сброс</button>
                 </div>
+                <div class="demo-controls" title="Посмотреть, как лабиринт проходит алгоритм">
+                    <span class="demo-label">🤖 Демо</span>
+                    <select id="solverSelect" class="select-input" aria-label="Алгоритм"></select>
+                    <button class="btn-tertiary" id="demoButton">Показать</button>
+                </div>
                 <div class="logs-panel">
-                    <div class="logs-header">📋 Логи</div>
+                    <div class="logs-header">
+                        <span>📋 Логи</span>
+                        <button class="btn-link" id="clearLogsButton">Очистить</button>
+                    </div>
                     <div class="logs-content" id="logsContent"></div>
                 </div>
-            </div>
-        </div>
+            </section>
+        </main>
     </div>
 
     <!-- Level Editor Modal -->
-    <div class="editor-modal hidden" id="editorModal">
-        <div class="editor-modal-content">
+    <div class="overlay hidden" id="editorModal">
+        <div class="modal-card editor-modal-content">
             <div class="editor-modal-header">
                 <h2>🔧 Конструктор уровней</h2>
-                <button class="editor-close-btn" id="editorCloseBtn">✕</button>
+                <button class="icon-close" id="editorCloseBtn" aria-label="Закрыть">✕</button>
             </div>
             <div class="editor-body">
                 <canvas id="editorCanvas"></canvas>
                 <div class="editor-sidebar">
                     <div class="editor-tools">
                         <h3>Инструменты</h3>
-                        <button class="tool-btn active" data-tool="path">□ Путь</button>
-                        <button class="tool-btn" data-tool="wall">■ Стена</button>
-                        <button class="tool-btn" data-tool="start">A Старт</button>
-                        <button class="tool-btn" data-tool="finish">🚩 Финиш</button>
-                        <button class="tool-btn" data-tool="trap">✕ Ловушка</button>
-                        <button class="tool-btn" data-tool="coin">★ Монета</button>
+                        <div class="tool-grid">
+                            <button class="tool-btn active" data-tool="path">□ Путь</button>
+                            <button class="tool-btn" data-tool="wall">■ Стена</button>
+                            <button class="tool-btn" data-tool="start">A Старт</button>
+                            <button class="tool-btn" data-tool="finish">🚩 Финиш</button>
+                            <button class="tool-btn" data-tool="trap">✕ Ловушка</button>
+                            <button class="tool-btn" data-tool="coin">★ Монета</button>
+                        </div>
                     </div>
-                    <div class="editor-name-row">
-                        <input type="text" id="mapNameInput" placeholder="Название карты..." maxlength="40">
-                    </div>
+                    <label class="field-row">
+                        <span>Размер поля</span>
+                        <select id="editorSizeSelect" class="select-input"></select>
+                    </label>
+                    <input type="text" id="mapNameInput" class="text-input" placeholder="Название карты..." maxlength="40">
                     <div class="editor-actions">
                         <button class="btn-primary" id="editorPlayBtn">▶ Играть</button>
                         <button class="btn-tertiary" id="editorSaveBtn">💾 Сохранить</button>
@@ -105,36 +140,103 @@
         </div>
     </div>
 
+    <!-- Settings Modal -->
+    <div class="overlay hidden" id="settingsModal">
+        <div class="modal-card settings-content">
+            <div class="modal-title">⚙️ Настройки</div>
+            <label class="settings-field">
+                <span class="settings-label">Пауза между командами <output id="settingSpeedValue">300 мс</output></span>
+                <input type="range" id="settingSpeed" step="50">
+            </label>
+            <div class="settings-message" id="settingsMessage" role="alert"></div>
+            <div class="modal-buttons">
+                <button class="btn-primary" id="settingsSaveBtn">Сохранить</button>
+                <button class="btn-tertiary" id="settingsCancelBtn">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Player Modal -->
+    <div class="overlay hidden" id="playerModal">
+        <div class="modal-card player-content">
+            <div class="modal-title">🧭 Maze Quest</div>
+            <p class="player-text">Как вас зовут? Прогресс сохранится под этим именем.</p>
+            <input type="text" id="playerNameInput" class="text-input player-input" list="playerNameList"
+                   maxlength="20" placeholder="Ваше имя" autocomplete="off">
+            <datalist id="playerNameList"></datalist>
+            <div class="settings-message" id="playerMessage" role="alert"></div>
+            <div class="modal-buttons">
+                <button class="btn-primary" id="playerStartBtn">Играть 🚀</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Intro Modal: new concept unlocked -->
+    <div class="overlay hidden" id="introModal">
+        <div class="modal-card tutorial-content">
+            <div class="tutorial-title" id="introTitle"></div>
+            <div class="intro-body tutorial-text" id="introBody"></div>
+            <div class="tutorial-buttons">
+                <button class="btn-primary" id="introCloseBtn">Понятно 👍</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Campaign Complete Modal -->
+    <div class="overlay hidden" id="finishModal">
+        <div class="modal-card victory-content finish-content">
+            <div class="modal-title" id="finishTitle"></div>
+            <div class="finish-stars" id="finishStars"></div>
+            <div class="finish-grid" id="finishGrid"></div>
+            <div class="modal-buttons">
+                <button class="btn-primary" id="finishRestartBtn">Играть заново</button>
+                <button class="btn-tertiary" id="finishSwitchBtn">Сменить игрока</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Tutorial Modal -->
-    <div class="tutorial-modal hidden" id="tutorialModal">
-        <div class="tutorial-content">
-            <div class="tutorial-title">🎮 Maze Quest</div>
+    <div class="overlay hidden" id="tutorialModal">
+        <div class="modal-card tutorial-content">
+            <div class="tutorial-title">🧭 Maze Quest</div>
 
             <div class="tutorial-section">
                 <div class="tutorial-section-title">Как играть</div>
-                <div class="tutorial-text" style="font-size: 18px; line-height: 1.8;">
-                    Напишите команды для управления героем. Дойдите до финиша 🚩 и вызовите <code>hero.finish()</code>
+                <div class="tutorial-text">
+                    Напишите команды для управления героем. Дойдите до финиша 🚩 и вызовите <code>hero.finish()</code>.
+                    Программа всегда запускается со старта. Впереди 14 уровней — пройдите их по порядку.
                 </div>
             </div>
 
             <div class="tutorial-section">
                 <div class="tutorial-section-title">Команды</div>
-                <div class="tutorial-code" style="font-size: 16px; line-height: 1.8;">
-hero.down() → шаг вниз<br>
-hero.up() → шаг вверх<br>
-hero.left() → шаг влево<br>
-hero.right() → шаг вправо<br>
-                </div>
+                <div class="tutorial-code">
+<span class="tk-obj">hero</span>.<span class="tk-fn">down</span>()   <span class="tk-cm">// шаг вниз</span>
+<span class="tk-obj">hero</span>.<span class="tk-fn">up</span>()     <span class="tk-cm">// шаг вверх</span>
+<span class="tk-obj">hero</span>.<span class="tk-fn">left</span>()   <span class="tk-cm">// шаг влево</span>
+<span class="tk-obj">hero</span>.<span class="tk-fn">right</span>()  <span class="tk-cm">// шаг вправо</span>
+<span class="tk-obj">hero</span>.<span class="tk-fn">finish</span>() <span class="tk-cm">// закончить уровень</span></div>
+            </div>
+
+            <div class="tutorial-section">
+                <div class="tutorial-section-title">Циклы — с уровня 5</div>
+                <div class="tutorial-code"><span class="tk-kw">repeat</span>(<span class="tk-num">3</span>) {
+    <span class="tk-obj">hero</span>.<span class="tk-fn">right</span>();
+}                 <span class="tk-cm">// три шага вправо</span></div>
             </div>
 
             <div class="tutorial-section">
                 <div class="tutorial-section-title">Элементы</div>
-                <div class="tutorial-text" style="font-size: 18px; line-height: 1.8;">
-                    ★ = монеты<br>
-                    ✕ = ловушки (+5 шагов)<br>
-                    A = старт<br>
-                    🚩 = финиш
+                <div class="legend">
+                    <div class="legend-item"><span class="legend-swatch swatch-coin">★</span> монета</div>
+                    <div class="legend-item"><span class="legend-swatch swatch-trap">▲</span> ловушка (+5 шагов)</div>
+                    <div class="legend-item"><span class="legend-swatch swatch-start">A</span> старт</div>
+                    <div class="legend-item"><span class="legend-swatch swatch-finish">🚩</span> финиш</div>
                 </div>
+            </div>
+
+            <div class="tutorial-text tutorial-keys">
+                <kbd>Ctrl</kbd>+<kbd>Enter</kbd> — запуск, <kbd>Esc</kbd> — остановка
             </div>
 
             <div class="tutorial-buttons">
@@ -144,27 +246,35 @@ hero.right() → шаг вправо<br>
     </div>
 
     <!-- Victory Modal -->
-    <div class="modal" id="victoryModal">
-        <div class="modal-content">
+    <div class="overlay hidden" id="victoryModal">
+        <div class="modal-card victory-content">
             <div class="modal-title">🎉 Победа!</div>
+            <div class="stars" id="modalStars">
+                <span class="star">★</span><span class="star">★</span><span class="star">★</span>
+            </div>
             <div class="modal-stats">
                 <div class="modal-stat-item">
-                    <span>Шаги:</span>
+                    <span>Шаги</span>
                     <span id="modalSteps">0</span>
                 </div>
                 <div class="modal-stat-item">
-                    <span>Время:</span>
+                    <span>Лучший путь</span>
+                    <span id="modalOptimal">0</span>
+                </div>
+                <div class="modal-stat-item">
+                    <span>Время</span>
                     <span id="modalTime">0:00</span>
                 </div>
                 <div class="modal-stat-item">
-                    <span>Монеты:</span>
+                    <span>Монеты</span>
                     <span id="modalCoins">0</span>
                 </div>
                 <div class="modal-stat-item">
-                    <span>Команд:</span>
-                    <span id="modalCommands">0</span>
+                    <span>Строк кода</span>
+                    <span id="modalLines">0</span>
                 </div>
             </div>
+            <div class="modal-note" id="modalNote"></div>
             <div class="modal-buttons">
                 <button class="btn-primary" id="nextLevelButton">Следующий уровень</button>
                 <button class="btn-tertiary" id="restartButton">Заново</button>
@@ -172,6 +282,12 @@ hero.right() → шаг вправо<br>
         </div>
     </div>
 
+    <script src="scripts/config.js"></script>
+    <script src="scripts/maze.js"></script>
+    <script src="scripts/program.js"></script>
+    <script src="scripts/levels.js"></script>
+    <script src="scripts/render.js"></script>
     <script src="scripts/game.js"></script>
+    <script src="scripts/editor.js"></script>
 </body>
 </html>

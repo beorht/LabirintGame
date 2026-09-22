@@ -62,85 +62,66 @@ curl -X POST http://localhost:3000/api/maps -d '{"name":"Test","maze":[[...]]}' 
 ### File Structure
 
 ```
-GamePlatfrom/v1/
-├── index.html              # Game UI markup and modals
-├── styles/game.css         # All styling (light/dark theme support, responsive)
-├── scripts/game.js         # Complete game logic (~676 lines)
+├── index.html              # Game UI markup and modals (loads the scripts below in order)
+├── styles/game.css         # All styling (light/dark theme tokens, responsive)
+├── scripts/
+│   ├── config.js           # Config layer: DEFAULT_SETTINGS, validateSettings() → ConfigError, levelGridSize()
+│   ├── maze.js             # Domain layer (no DOM): generator, BFS, solvers, normalizeMap()
+│   ├── program.js          # Player code (no DOM): parse commands + repeat blocks, expand, dry-run
+│   ├── levels.js           # Campaign data (no DOM): 14 levels as ASCII maps + rules
+│   ├── render.js           # View layer: palette, board view, drawing primitives, particles
+│   ├── game.js             # UI: game state, code execution, demo mode, settings, HUD, logs
+│   └── editor.js           # UI: level editor + saved-maps list (backend API)
+├── tests/                  # node --test suites; levels.test.js holds 3-star reference solutions
 ├── server.js               # Optional Express backend for map persistence
-├── maps/                   # Directory for storing custom map JSON files
-├── package.json            # Dependencies (Express for backend)
+├── maps/                   # Saved custom maps (JSON)
 └── docs/tz.md              # Full specification document
 ```
 
+Scripts are classic `<script>` tags sharing one global scope — **top-level `const` names must be unique across files**. `config.js`, `maze.js`, `program.js` and `levels.js` must stay DOM-free; they export via `module.exports` when loaded in Node so `npm test` can require them.
+
 ## Architecture
 
-### Core Components
+Layering follows `ARCHITECTURE.md` (config → domain → view → UI):
 
-**1. Game State (`gameState` object)**
-- Central state object storing: maze, player position, score, level, traps, coins, timer
-- Manages execution flow (`isRunning`, `currentCommandIndex`)
-- Updated after every action via `updateUI()`
+**Config (`config.js`)** — `validateSettings(raw)` returns clean `{ speed }` or throws `ConfigError` with a player-facing message. `game.js` catches it: in the settings modal the message is shown inline; broken stored settings fall back to defaults with a log entry.
 
-**2. Canvas Rendering (`draw()` function)**
-- Renders maze grid, walls, player, obstacles, coins
-- Grid size: 14×14 cells, each cell 50px
-- Supports custom player character (PNG image) loaded from localStorage
-- Color scheme loaded dynamically from CSS variables (supports dark/light theme)
+**Campaign (`levels.js`)** — `LEVELS` is a fixed list of 14 levels (maps drawn with `# . S F T C`). `getLevel(n)` parses the map and adds rules: `maxLines` (line limit for ⭐⭐⭐, levels 5+), `allowRepeat` (n ≥ 5), `allowNesting` (n ≥ 10), `intro` (one-time explainer). Levels 2–4 were produced by the generator and frozen as maps. Every level has a reference solution in `tests/levels.test.js` that must reach the finish on the shortest path, avoid traps and fit `maxLines` exactly — **changing a map or limit means updating that solution**.
 
-**3. Code Execution Engine (`executeCode()` async function)**
-- Parses user code line-by-line, filters comments (lines starting with `//`)
-- Validates command syntax using regex pattern `/hero\.(\w+)\(\)/`
-- Executes matching commands with 300ms delay between steps for animation
-- Handles `hero.up()`, `hero.down()`, `hero.left()`, `hero.right()`, `hero.finish()` methods via a `hero` object with corresponding functions
-- Tracks execution state (`isRunning`, `currentCommandIndex`) for error highlighting
-- Auto-detects victory when code ends on the finish tile or when `hero.finish()` is called on finish position
+**Player code (`program.js`)** — `compileProgram(source, { allowRepeat, allowNesting })` → `{ steps, lines, error }`. Grammar: one statement per line; `hero.cmd();`, `repeat(N) {` (N 1–20), `}`; `//` comments anywhere. Loops are unrolled into `steps` (each keeps `lineIndex` and `loops: [{ lineIndex, iteration, times }]`), capped at `MAX_STEPS`. `countCodeLines()` = non-blank, non-comment lines (braces count). `simulateSteps(level, steps)` dry-runs with trap penalties.
 
-**4. Movement System (`movePlayer()` function)**
-- Validates moves: bounds checking, wall collision detection
-- Applies game mechanics: trap penalties (+5 steps), coin collection (+1 coin)
-- Updates step counter and player position in gameState
+**Domain (`maze.js`)** — mazes are square 2D arrays (`1` wall, `0` path), any size 5–25.
+- `generateMaze(size, rng)`: iterative recursive backtracker + a `loopFactor` share of extra openings (odd sizes only), seeded by `createRng()` (mulberry32). Not used at runtime by the campaign — it's the tool that produced levels 2–4.
+- `bfs(maze, sx, sy, ex, ey)` → direction names or `null`; `bfsSearch()` also returns `explored` order and distances.
+- Solver strategies in `SOLVERS` (`bfs`, `dfs`, `rightHand`): `solve(maze, start, finish)` → `{ moves, explored, solved, reason? }`. The right-hand rule detects repeated (cell, heading) states and reports a loop instead of hanging.
+- `normalizeMap()` makes legacy maps (15-row, `[x, y]` items) usable.
 
-**5. Pathfinding Engine (`bfs()` function)**
-- Implements Breadth-First Search for optimal path calculation
-- Used by hint system (5-step hints) and solve solution
-- Returns direction sequence that `pathToCommands()` converts to `hero.xxx()` syntax
+**View (`render.js`)** — `createBoardView(canvas, maxPx)` + `resizeBoardView(view, gridSize)` compute the cell size to fit; `buildBoardLayer()` pre-renders the static board offscreen. Colors come from `palette` (refreshed on theme change by `refreshPalette()`; don't call `getColor()` in draw loops).
 
-**6. Custom Character Support**
-- Player can upload a custom PNG image (recommended 15×15px) to replace the default player character
-- Image is stored in localStorage as base64 and persists across sessions
-- File input: `characterInput` element, button: `uploadCharacterButton`
-- If available, custom image is drawn instead of the default character in `draw()`
-
-**7. Level Progression**
-- Maze template changes per level (currently level 1 uses fixed snake-like maze)
-- Victory modal shows stats: steps, time, coins collected, commands written
-- Next level increments level counter and clears editor while respawning player
-- Next level uses same maze template (maze difficulty increase not yet implemented)
+**UI (`game.js`, `editor.js`)** — `gameState` holds the current level and run state; `fx` holds visual-only state. `draw()` composites layer + explored overlay + trail + items + hero + particles; frames are requested on demand via `requestRender()` only while something animates.
 
 ### Key Functions
 
 | Function | Purpose |
 |----------|---------|
-| `initGame()` | Reset maze, player position, traps, coins, timer; call when starting new level |
-| `executeCode()` | Async: parse and execute user code line-by-line with 300ms delays |
-| `movePlayer(dx, dy)` | Move player by (dx, dy), validate bounds/walls, apply trap/coin logic |
-| `draw()` | Render to canvas: maze walls, obstacles, coins, player, finish flag |
-| `bfs(startX, startY, endX, endY)` | Breadth-First Search; returns array of directions (0=up, 1=right, 2=down, 3=left) |
-| `pathToCommands(directions, limit)` | Convert BFS directions array to hero command strings; limit to N commands if specified |
-| `generateHint()` | Use BFS to get next 5 steps from player to finish, convert to code, insert at editor cursor |
-| `showVictoryModal()` | Display modal with win stats: steps, time, coins, commands written; buttons for next level/restart |
-| `updateUI()` | Update HUD: step count, timer, level, coin count, line count |
-| `startTimer()` / `stopTimer()` | Begin/end interval that ticks gameState.timer every second |
-| `updateLineNumbers(errorLineIndex)` | Render line numbers; highlight in red if errorLineIndex >= 0 |
-| `getColor(cssVar)` | Get CSS variable value from document root (used for theme colors) |
-| `addLog(message, type)` | Append timestamped log entry; type='info'/'success'/'error' affects styling |
+| `selectPlayer(name)` | Load/create progress (localStorage `mazeQuestPlayers`) and continue from the player's level |
+| `initGame()` | Build the current level (`customLevel` or `getLevel`), resize the canvas, reset hero/timer, show intro |
+| `executeCode()` | `compileProgram()` the whole code, then run the unrolled steps with `settings.speed` ms delays; gutter shows loop iterations |
+| `winLevel()` / `calcStars(lines)` | Stars by steps vs `optimalSteps`, capped at 2 if over `maxLines`; `recordVictory()` saves progress |
+| `runDemo()` | Auto-solve with the selected `SOLVERS` strategy: animate `explored`, then walk `moves` |
+| `movePlayer(dx, dy)` | Move hero, throw on wall/bounds (with shake), apply traps/coins |
+| `generateHint()` | `simulateProgram()` the current code, BFS from where it ends, append ≤5 commands |
+| `saveSettings()` / `loadSettings()` | Settings modal ↔ `validateSettings()` ↔ localStorage `'settings'` |
+| `startCustomLevel(data)` | Play a map from the editor or server (normalized, kept in localStorage) |
 
 ## UI Features
 
 **Button Controls:**
 - **▶ Выполнить (Execute):** Calls `executeCode()` asynchronously, disables itself until execution completes
-- **↻ Сброс (Reset):** Calls `initGame()` to reset maze/player position while preserving code and logs
-- **💡 Подсказка (Hint):** Calls `generateHint()` which uses BFS to compute next 5 steps and insert them at cursor position
+- **↻ Сброс (Reset):** `resetLevel()` — hero back to start, traps/coins restored, code kept
+- **💡 Подсказка (Hint):** `generateHint()` appends up to 5 commands continuing the current code
+- **🤖 Демо:** `runDemo()` with the selected solver
+- **⚙️ Настройки:** field size (auto/fixed) and delay between commands
 - **📋 Копировать (Copy):** Copies code editor contents to clipboard via `copyCode()`
 - **🎨 Персонаж (Character):** Opens file input to upload custom PNG image
 
@@ -194,106 +175,59 @@ Backend is completely optional — game functions without it using only browser-
 
 ### Making Changes
 
-**Maze Layout:** Modify the `mazeTemplate` array in `generateMaze()` to change the maze shape per level. The template is a 2D array where `1 = wall`, `0 = path`.
+**Solvers:** add an entry to `SOLVERS` in `maze.js` returning `{ moves, explored, solved, reason? }`; it appears in the demo select automatically. Add a test in `tests/maze.test.js`.
 
-**Obstacle Placement:** `placeObstacles()` randomly distributes traps and coins. Adjust trap count formula (`4 + (level × 2)`) or coin count (5 per level) here.
+**Levels:** edit `LEVELS` in `levels.js` and the matching entry in `SOLUTIONS` (`tests/levels.test.js`); run `npm test`.
 
-**Execution Speed:** Change `EXECUTION_DELAY` constant (milliseconds between command steps). Currently 300ms.
+**Language:** new statements go into `parseProgram()`/`expandProgram()` in `program.js` with tests in `tests/program.test.js`.
 
-**Grid Size:** `GRID_SIZE` (14) and `CELL_SIZE` (50px) control maze dimensions. Adjust canvas initialization if changed.
+**Settings:** add a field to `DEFAULT_SETTINGS` + `validateSettings()` (throw `ConfigError` with a readable message), then wire the control in the settings modal.
 
-**Command Syntax:** The command parser uses regex `/hero\.(\w+)\(\)/` to match commands — no eval() used. Commands must match `hero.METHOD();` format exactly. Add new commands by adding methods to the `hero` object in `executeCode()`.
+**Commands:** no `eval()`. Add commands to `HERO_COMMANDS` (`program.js`) and `runCommand()` (`game.js`).
 
 ### Testing
 
-No automated test suite exists. Manual testing approach:
-1. Load game in browser
-2. Try various code patterns (loops not supported, must be explicit commands)
-3. Test hint/solve buttons
-4. Verify error highlighting on invalid commands
-5. Check mobile responsiveness (< 768px triggers mobile layout)
+`npm test` runs `node --test` over `tests/*.test.js` (generator connectivity, determinism, solver correctness, settings validation). The UI has no automated tests — check in a browser: run code, hints, demo for each solver, settings, level editor sizes, both themes, < 768px layout.
 
-### Theme System
+### localStorage
 
-CSS variables in `game.css` control colors for light/dark themes. Game auto-detects system preference via `window.matchMedia('(prefers-color-scheme: dark)')` or reads from localStorage key `'theme'`. The theme is applied to the `data-theme` attribute on `<html>`. Use `getColor(cssVar)` function to fetch computed CSS variable values.
-
-### localStorage & Persistence
-
-- `'theme'` — stores 'light' or 'dark' preference
-- `'customCharacter'` — stores base64-encoded PNG image of custom player character
-
-### Performance Considerations
-
-- Canvas drawing happens every 300ms during execution (tied to `EXECUTION_DELAY`)
-- No animation frames (requestAnimationFrame) — simple setTimeout-based stepping
-- BFS pathfinding is O(V+E) but maze is small (14×14), completes in <50ms
-- No virtual DOM, no framework — direct DOM manipulation
-- Frontend runs entirely in browser; optional Express backend (`server.js`) handles map persistence if enabled
+- `'theme'` — `'light'` / `'dark'`
+- `'settings'` — `{ speed }` (validated on load)
+- `'mazeQuestPlayers'` — `{ [name]: { level, stars: { [n]: 1..3 }, intros: [...] } }`; `level` 15 = campaign complete
+- `'mazeQuestPlayer'` — last player name (auto-continue on load)
+- `'customCharacter'` — base64 PNG
+- `'customLevel'` — last map played/saved from the editor
 
 ## Game Mechanics
 
-**Movement:** `movePlayer(dx, dy)` checks bounds and maze walls before updating position. Returns nothing unless `hero.finish()` is called on finish tile (returns 'finish').
+**Movement:** `movePlayer(dx, dy)` throws on bounds/walls (error line highlighted, board shakes).
 
-**Traps:** Randomly placed by `placeObstacles()`. When stepped on, adds 5 to step counter and removes trap from `gameState.traps` set (no repeat triggering).
+**Traps / Coins:** drawn into the level maps (`T` / `C`). A trap adds 5 steps once; coins move from `gameState.coinCells` to `gameState.coins`.
 
-**Coins:** Randomly placed by `placeObstacles()`. When collected, adds 1 to `gameState.coins` and removes coin from `gameState.collectedCoins` set.
+**Runs always start from start:** `executeCode()` and `runDemo()` call `resetHero()`, restoring `initialTraps`/`initialCoins`.
 
-**Victory Condition:** Player calls `hero.finish()` while on finish tile, OR code execution ends naturally while player is on finish tile.
-
-## Typical Workflows
-
-**Add a new level variant:**
-1. In `generateMaze()`, add a level-specific condition (e.g., `if (gameState.level === 2) { mazeTemplate = [...] }`)
-2. Define maze as 2D array where `1 = wall`, `0 = path` — 14×14 grid required
-3. In `placeObstacles()`, adjust trap count by level: `4 + (level × 2)` (can be made configurable)
-4. Update finish position: set `gameState.finishX` and `gameState.finishY` if different from default (10, 3)
-5. Test in browser: start game, advance to new level, verify maze renders and BFS hint works
-
-**Fix a command execution bug:**
-- Edit the command matching logic in `executeCode()` — the regex `/hero\.(\w+)\(\)/` extracts method names and calls them on the `hero` object
-- Add/adjust error messages in the catch block (lines ~376-410 in game.js)
-- Check `movePlayer()` for boundary/collision logic (handles bounds, walls, traps, coins)
-- Verify the `hero` object definition within `executeCode()` includes all supported commands
-
-**Improve UI responsiveness:**
-- Modify `styles/game.css` media queries (breakpoint: 768px)
-- Adjust grid layout in `game-area` and `editor-area` divs
-- Test with mobile emulator or device
-
-**Add custom map creation UI:**
-1. Add a UI form in `index.html` to capture map name, maze layout, obstacle positions
-2. On form submit, POST to `/api/maps` with map data (requires backend running)
-3. Fetch existing maps via `GET /api/maps` and render as level selection menu
-4. Update `initGame()` to accept a map ID parameter and load from backend instead of hardcoded template
-5. Test with both `npm start` (backend) and Python server (browser-only fallback)
+**Victory:** `hero.finish()` on the finish tile, or the program ends on it. Stars compare steps (incl. trap penalties) with `optimalSteps`; over `maxLines` caps at 2. Demo runs and custom maps never change campaign progress. After level 14 the campaign-complete screen offers a restart (best stars kept).
 
 ## Important Implementation Details
 
-**Command Parsing:** The regex `/hero\.(\w+)\(\)/` is strict — extra whitespace, missing parentheses, or typos will error. Lines starting with `//` are filtered out before parsing.
+**Hints:** `generateHint()` dry-runs the current code with `simulateProgram()` and runs BFS from where the code ends, so hints continue the existing program.
 
-**async/await in executeCode():** Uses `await new Promise(resolve => setTimeout(resolve, EXECUTION_DELAY))` between steps to maintain animation pacing without blocking.
+**Stopping runs:** every run captures `runId`; `stopExecution()`/`initGame()` bump it so a run waiting on its delay exits (`isCurrentRun()`).
 
-**Maze Bounds:** Maze is always 14×14. Borders are walls (index 0 and 13). Walkable area is typically 1–12 on both axes.
+**Animation clock:** `renderFrame()` uses `performance.now()`, not the rAF timestamp (which can precede `moveStart` and make the tween extrapolate backwards).
 
-**Error Handling:** `executeCode()` catches errors, logs them, highlights the error line in the editor, and stops execution. `movePlayer()` silently fails on invalid moves (bounds/wall).
-
-**Canvas Rendering:** `draw()` is called after every move. It clears the canvas and redraws the entire maze state — no incremental updates.
-
-**BFS Termination:** `bfs()` can return an empty array if finish is unreachable, but with current maze design this shouldn't happen.
+**Map sizes:** maps are square, 5–25. The server validates this; old 15-row maps are cropped by `normalizeMap()`.
 
 ## Known Limitations & TODOs
 
-- **No loop support:** Players must write explicit commands, no `for` loops
-- **Custom map UI not implemented:** Backend API exists (`server.js`) but frontend has no UI for creating/selecting custom maps yet
+- **Only `repeat`:** no conditions or variables in the player language
+- **Progress is per browser:** players live in localStorage, not on the server
 - **No leaderboard:** No persistent storage of scores
-- **Mobile editing:** Mobile keyboards may be awkward for code entry — no mobile-optimized editor
-- **Linear level progression:** Level just increments; no branching difficulty paths
-- **No procedural maze generation:** All mazes in `generateMaze()` are hardcoded templates (though backend supports arbitrary map storage)
+- **Mobile editing:** Mobile keyboards may be awkward for code entry
+- **Right-hand rule on braided mazes:** may fail by design (loops) — shown as a teaching point in the demo
 
 ## Code Style Notes
 
-- Global scope polluted (no modules) — all functions are top-level
-- Heavy use of `gameState` object instead of class-based architecture
-- DOM manipulation is direct (no virtual DOM or framework)
-- CSS uses CSS custom properties (variables) for theming
-- Express.js provides optional backend for map persistence (`server.js`); frontend works standalone via simple HTTP server
+- No modules/bundler — classic scripts, global functions, `gameState`/`editorState`/`fx` objects
+- Domain and config code stay pure (no DOM) so they remain testable in Node
+- CSS custom properties for theming; canvas colors read through `palette`

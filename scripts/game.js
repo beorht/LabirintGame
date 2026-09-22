@@ -1,8 +1,44 @@
-// Game constants
-const GRID_SIZE = 14;
-const CELL_SIZE = 50;
-const EXECUTION_DELAY = 300;
-const EDITOR_CELL_SIZE = 40;
+// UI layer: players and campaign progress, HUD, code execution, demo (auto-solve) mode, settings.
+// Depends on config.js, maze.js, program.js, levels.js and render.js.
+
+const BOARD_MAX_PX = 700;
+const MOVE_ANIMATION_MS = 180;
+const SHAKE_MS = 320;
+const HINT_LENGTH = 5;
+const MAX_LOG_ENTRIES = 200;
+const DEMO_MAX_WALK_MS = 20000;         // long solver walks are sped up to fit this
+const MAX_NAME_LENGTH = 20;
+const PLAYERS_KEY = 'mazeQuestPlayers';
+const CURRENT_PLAYER_KEY = 'mazeQuestPlayer';
+
+// One-time explanations shown when a level unlocks a new idea
+const INTROS = {
+    repeat: {
+        title: '🔁 Новое: циклы',
+        body: `
+            <p>Когда нужно повторить одно и то же, не пишите команду много раз — используйте <code>repeat</code>:</p>
+            <div class="tutorial-code"><span class="tk-kw">repeat</span>(<span class="tk-num">8</span>) {
+    <span class="tk-obj">hero</span>.<span class="tk-fn">right</span>();
+}</div>
+            <p>Число в скобках — сколько раз повторить. Всё, что внутри <code>{ }</code>, выполнится столько раз.
+            Внутри цикла может быть несколько команд.</p>
+            <p>⭐⭐⭐ теперь дают, только если код <b>не длиннее лимита строк</b> — он показан над полем.</p>`
+    },
+    nesting: {
+        title: '🪆 Новое: цикл в цикле',
+        body: `
+            <p>Внутрь <code>repeat</code> можно поместить другой <code>repeat</code>. Так повторяется целый узор:</p>
+            <div class="tutorial-code"><span class="tk-kw">repeat</span>(<span class="tk-num">3</span>) {
+    <span class="tk-kw">repeat</span>(<span class="tk-num">4</span>) {
+        <span class="tk-obj">hero</span>.<span class="tk-fn">right</span>();
+    }
+    <span class="tk-obj">hero</span>.<span class="tk-fn">down</span>();
+}</div>
+            <p>Внутренний цикл выполнится полностью на каждом витке внешнего: здесь 3 × (4 шага вправо + 1 вниз).</p>`
+    }
+};
+
+const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
 
 // Game state
 const gameState = {
@@ -16,340 +52,568 @@ const gameState = {
     steps: 0,
     coins: 0,
     level: 1,
+    levelInfo: null,            // rules of the current level: title, goal, maxLines, allowRepeat…
     traps: new Set(),
-    collectedCoins: new Set(),
+    coinCells: new Set(),       // coins still on the board
+    initialTraps: [],           // layout restored on every run / reset
+    initialCoins: [],
+    visited: new Set(),         // hero trail
+    optimalSteps: 0,
     isRunning: false,
-    currentCommandIndex: 0,
+    runId: 0,                   // invalidates a stopped run still waiting on its delay
     timer: 0,
     timerInterval: null,
-    isCustomLevel: false
+    customLevel: null,          // map data while playing a custom map
+    player: null,               // { name, progress: { level, stars, intros } }
+    settings: { ...DEFAULT_SETTINGS }
 };
 
-// Editor state
-const editorState = {
-    maze: [],
-    traps: new Set(),
-    coins: new Set(),
-    startX: 1,
-    startY: 1,
-    finishX: 10,
-    finishY: 3,
-    currentTool: 'path',
-    isDrawing: false,
-    initialized: false
+// Visual effects state (never affects game logic)
+const fx = {
+    moveFrom: null,
+    moveStart: 0,
+    moveDuration: MOVE_ANIMATION_MS,
+    facing: 'right',
+    shakeStart: -Infinity,
+    particles: [],
+    explored: { cells: [], count: 0 },
+    frameId: null
 };
 
-// DOM elements
-let canvas, ctx, codeEditor, lineNumbers, copyButton, runButton, resetButton;
-let hintButton, gameMessage, logsContent, victoryModal, tutorialModal;
-let stepCountDisplay, timerDisplay, levelDisplay, coinCountDisplay, lineCountDisplay;
-let uploadCharacterButton, characterInput;
-let editorModal, editorCanvas, editorCtx, editorMessage, editorButton, editorCloseBtn;
-let editorPlayBtn, editorSaveBtn, editorClearBtn;
-let mapNameInput, mapsList;
-
-// Custom character
+const dom = {};
+let boardView;
 let customCharacterImage = null;
+let lineHighlight = { index: -1, kind: '', loops: [] };
+let editorMetrics = { lineHeight: 24, padTop: 12 };
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const isHidden = el => el.classList.contains('hidden');
 
 // Initialize DOM elements
 function initDOM() {
-    canvas = document.getElementById('gameCanvas');
-    ctx = canvas.getContext('2d');
-    codeEditor = document.getElementById('codeEditor');
-    lineNumbers = document.getElementById('lineNumbers');
-    copyButton = document.getElementById('copyButton');
-    runButton = document.getElementById('runButton');
-    resetButton = document.getElementById('resetButton');
-    hintButton = document.getElementById('hintButtonHUD');
-    gameMessage = document.getElementById('gameMessage');
-    logsContent = document.getElementById('logsContent');
-    victoryModal = document.getElementById('victoryModal');
-    tutorialModal = document.getElementById('tutorialModal');
-    stepCountDisplay = document.getElementById('stepCount');
-    timerDisplay = document.getElementById('timerDisplay');
-    levelDisplay = document.getElementById('levelDisplay');
-    coinCountDisplay = document.getElementById('coinCount');
-    lineCountDisplay = document.getElementById('lineCount');
+    [
+        'gameCanvas', 'codeEditor', 'lineNumbers', 'execHighlight', 'copyButton', 'runButton',
+        'resetButton', 'hintButton', 'helpButton', 'themeButton', 'settingsButton', 'clearLogsButton',
+        'gameMessage', 'logsContent', 'victoryModal', 'tutorialModal', 'stepCount', 'timerDisplay',
+        'levelDisplay', 'levelSize', 'coinCount', 'coinTotal', 'lineCount', 'lineLimit', 'codeCounter',
+        'uploadCharacterButton', 'characterInput', 'solverSelect', 'demoButton',
+        'levelTitle', 'levelGoal', 'levelTags', 'playerButton',
+        'playerModal', 'playerNameInput', 'playerNameList', 'playerMessage', 'playerStartBtn',
+        'introModal', 'introTitle', 'introBody', 'introCloseBtn',
+        'finishModal', 'finishTitle', 'finishStars', 'finishGrid', 'finishRestartBtn', 'finishSwitchBtn',
+        'settingsModal', 'settingSpeed', 'settingSpeedValue', 'settingsMessage',
+        'settingsSaveBtn', 'settingsCancelBtn',
+        'modalSteps', 'modalOptimal', 'modalTime', 'modalCoins', 'modalLines', 'modalStars', 'modalNote',
+        'nextLevelButton', 'restartButton', 'startGameButton'
+    ].forEach(id => { dom[id] = document.getElementById(id); });
 
-    uploadCharacterButton = document.getElementById('uploadCharacterButton');
-    characterInput = document.getElementById('characterInput');
+    boardView = createBoardView(dom.gameCanvas, BOARD_MAX_PX);
 
-    editorModal = document.getElementById('editorModal');
-    editorCanvas = document.getElementById('editorCanvas');
-    editorCtx = editorCanvas.getContext('2d');
-    editorMessage = document.getElementById('editorMessage');
-    editorButton = document.getElementById('editorButton');
-    editorCloseBtn = document.getElementById('editorCloseBtn');
-    editorPlayBtn = document.getElementById('editorPlayBtn');
-    editorSaveBtn = document.getElementById('editorSaveBtn');
-    editorLoadBtn = document.getElementById('editorLoadBtn');
-    editorClearBtn = document.getElementById('editorClearBtn');
-    mapNameInput = document.getElementById('mapNameInput');
-    mapsList = document.getElementById('mapsList');
+    const editorStyle = getComputedStyle(dom.codeEditor);
+    editorMetrics = {
+        lineHeight: parseFloat(editorStyle.lineHeight) || 24,
+        padTop: parseFloat(editorStyle.paddingTop) || 12
+    };
 
-    canvas.width = GRID_SIZE * CELL_SIZE;
-    canvas.height = GRID_SIZE * CELL_SIZE;
-    editorCanvas.width = GRID_SIZE * EDITOR_CELL_SIZE;
-    editorCanvas.height = GRID_SIZE * EDITOR_CELL_SIZE;
+    dom.solverSelect.innerHTML = Object.entries(SOLVERS)
+        .map(([key, solver]) => `<option value="${key}">${solver.name}</option>`)
+        .join('');
+    dom.settingSpeed.min = SETTINGS_LIMITS.speedMin;
+    dom.settingSpeed.max = SETTINGS_LIMITS.speedMax;
 
-    // Load custom character from localStorage
     const savedCharacter = localStorage.getItem('customCharacter');
     if (savedCharacter) {
-        customCharacterImage = new Image();
-        customCharacterImage.src = savedCharacter;
+        const img = new Image();
+        img.onload = () => {
+            customCharacterImage = img;
+            requestRender();
+        };
+        img.src = savedCharacter;
     }
 }
 
-// Theme management
+// ---------- Theme ----------
+
 function initTheme() {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const savedTheme = localStorage.getItem('theme') || (prefersDark ? 'dark' : 'light');
-    document.documentElement.setAttribute('data-theme', savedTheme);
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)');
+    applyTheme(localStorage.getItem('theme') || (systemDark.matches ? 'dark' : 'light'));
+    systemDark.addEventListener('change', e => {
+        if (!localStorage.getItem('theme')) applyTheme(e.matches ? 'dark' : 'light');
+    });
 }
 
-// Game initialization
+function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    dom.themeButton.textContent = theme === 'dark' ? '☀️' : '🌙';
+    refreshPalette();
+    if (gameState.maze.length) {
+        buildBoardLayer(boardView, gameState);
+        requestRender();
+    }
+    if (editorState.initialized) drawEditorMaze();
+}
+
+function toggleTheme() {
+    const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', next);
+    applyTheme(next);
+}
+
+// ---------- Settings ----------
+
+// Broken stored settings never break the game: defaults are used and the player is told why
+function loadSettings() {
+    try {
+        const stored = localStorage.getItem('settings');
+        gameState.settings = stored ? validateSettings(JSON.parse(stored)) : { ...DEFAULT_SETTINGS };
+    } catch (err) {
+        gameState.settings = { ...DEFAULT_SETTINGS };
+        localStorage.removeItem('settings');
+        const reason = err instanceof ConfigError ? err.message : 'данные повреждены';
+        addLog(`Настройки сброшены по умолчанию: ${reason}`, 'error');
+    }
+}
+
+function openSettings() {
+    dom.settingSpeed.value = gameState.settings.speed;
+    dom.settingSpeedValue.textContent = `${gameState.settings.speed} мс`;
+    dom.settingsMessage.textContent = '';
+    dom.settingsModal.classList.remove('hidden');
+}
+
+function closeSettings() {
+    dom.settingsModal.classList.add('hidden');
+}
+
+function saveSettings() {
+    try {
+        gameState.settings = validateSettings({ speed: Number(dom.settingSpeed.value) });
+    } catch (err) {
+        if (!(err instanceof ConfigError)) throw err;
+        dom.settingsMessage.textContent = `⚠️ ${err.message}`;
+        return;
+    }
+    localStorage.setItem('settings', JSON.stringify(gameState.settings));
+    closeSettings();
+    addLog('Настройки сохранены', 'success');
+}
+
+// ---------- Players & progress ----------
+
+function readPlayers() {
+    try {
+        return JSON.parse(localStorage.getItem(PLAYERS_KEY)) || {};
+    } catch (err) {
+        return {};
+    }
+}
+
+function savePlayer() {
+    if (!gameState.player) return;
+    const players = readPlayers();
+    players[gameState.player.name] = gameState.player.progress;
+    localStorage.setItem(PLAYERS_KEY, JSON.stringify(players));
+}
+
+function openPlayerModal() {
+    const names = Object.keys(readPlayers());
+    dom.playerNameList.innerHTML = names.map(n => `<option value="${escapeHtml(n)}">`).join('');
+    dom.playerNameInput.value = gameState.player ? gameState.player.name : '';
+    dom.playerMessage.textContent = '';
+    dom.playerModal.classList.remove('hidden');
+    dom.playerNameInput.focus();
+}
+
+function submitPlayerName() {
+    const name = dom.playerNameInput.value.trim().replace(/\s+/g, ' ');
+    if (!name) {
+        dom.playerMessage.textContent = 'Введите имя';
+        return;
+    }
+    if (name.length > MAX_NAME_LENGTH) {
+        dom.playerMessage.textContent = `Имя не длиннее ${MAX_NAME_LENGTH} символов`;
+        return;
+    }
+    selectPlayer(name);
+}
+
+// Loads (or creates) a player's progress and continues from their level
+function selectPlayer(name) {
+    const players = readPlayers();
+    const isNew = !players[name];
+    const progress = { level: 1, stars: {}, intros: [], ...players[name] };
+    gameState.player = { name, progress };
+    dom.playerModal.classList.add('hidden');
+    localStorage.setItem(CURRENT_PLAYER_KEY, name);
+    savePlayer();
+    dom.playerButton.textContent = `👤 ${name}`;
+
+    gameState.customLevel = null;
+    gameState.level = Math.min(progress.level, LEVELS.length);
+    setEditorCode('');
+    initGame();
+    clearLogs();
+    addLog(isNew ? `Привет, ${name}! Впереди ${LEVELS.length} уровней` : `С возвращением, ${name}! Уровень ${gameState.level}`, 'info');
+
+    if (progress.level > LEVELS.length) showCampaignComplete();
+    else if (isNew) showTutorial();
+}
+
+function recordVictory(stars) {
+    if (gameState.customLevel || !gameState.player) return;
+    const { progress } = gameState.player;
+    progress.stars[gameState.level] = Math.max(progress.stars[gameState.level] || 0, stars);
+    progress.level = Math.max(progress.level, gameState.level + 1);
+    savePlayer();
+}
+
+function totalStars() {
+    return Object.values(gameState.player.progress.stars).reduce((sum, s) => sum + s, 0);
+}
+
+function showCampaignComplete() {
+    const { name, progress } = gameState.player;
+    dom.finishTitle.textContent = `🏆 Кампания пройдена, ${name}!`;
+    dom.finishStars.textContent = `★ ${totalStars()} из ${LEVELS.length * 3}`;
+    dom.finishGrid.innerHTML = LEVELS.map((level, i) => {
+        const stars = progress.stars[i + 1] || 0;
+        return `<div class="finish-level" title="${escapeHtml(level.title)}">
+            <span class="finish-level-num">${i + 1}</span>
+            <span class="finish-level-stars">${'★'.repeat(stars)}<span class="dim">${'★'.repeat(3 - stars)}</span></span>
+        </div>`;
+    }).join('');
+    dom.finishModal.classList.remove('hidden');
+}
+
+// Starts the campaign over; best stars are kept
+function restartCampaign() {
+    gameState.player.progress.level = 1;
+    savePlayer();
+    dom.finishModal.classList.add('hidden');
+    gameState.customLevel = null;
+    gameState.level = 1;
+    setEditorCode('');
+    initGame();
+    addLog('Кампания начата заново — лучшие звёзды сохранены', 'info');
+}
+
+function maybeShowIntro() {
+    const intro = gameState.levelInfo.intro;
+    if (!intro || !gameState.player || gameState.player.progress.intros.includes(intro)) return;
+    gameState.player.progress.intros.push(intro);
+    savePlayer();
+    dom.introTitle.textContent = INTROS[intro].title;
+    dom.introBody.innerHTML = INTROS[intro].body;
+    dom.introModal.classList.remove('hidden');
+    dom.introCloseBtn.focus();
+}
+
+// ---------- Game initialization ----------
+
 function initGame() {
-    generateMaze();
-    placeObstacles();
-    gameState.steps = 0;
-    gameState.coins = 0;
+    stopTimer();
+    gameState.timer = 0;
+    updateTimerDisplay();
+    gameState.runId++;
+    setRunning(false);
+
+    const level = gameState.customLevel
+        ? { ...gameState.customLevel, title: gameState.customLevel.name || 'Своя карта', goal: 'Карта из конструктора',
+            maxLines: null, allowRepeat: true, allowNesting: true, intro: null }
+        : getLevel(gameState.level);
+    gameState.levelInfo = level;
+    gameState.maze = level.maze.map(row => [...row]);
+    gameState.startX = level.startX;
+    gameState.startY = level.startY;
+    gameState.finishX = level.finishX;
+    gameState.finishY = level.finishY;
+    gameState.initialTraps = [...level.traps];
+    gameState.initialCoins = [...level.coins];
+
+    const bestPath = bfs(gameState.maze, gameState.startX, gameState.startY, gameState.finishX, gameState.finishY);
+    gameState.optimalSteps = bestPath ? bestPath.length : 0;
+
+    resizeBoardView(boardView, gameState.maze.length);
+    buildBoardLayer(boardView, gameState);
+    resetHero();
+    updateLevelBanner();
+    updateLineCount();
+    clearMessage();
+    clearLineHighlight();
+    maybeShowIntro();
+}
+
+// Put the hero back on start and restore the level's traps and coins
+function resetHero() {
     gameState.playerX = gameState.startX;
     gameState.playerY = gameState.startY;
-    gameState.traps.clear();
-    gameState.collectedCoins.clear();
-    gameState.timer = 0;
-    gameState.isRunning = false;
-    gameState.currentCommandIndex = 0;
+    gameState.steps = 0;
+    gameState.coins = 0;
+    gameState.traps = new Set(gameState.initialTraps);
+    gameState.coinCells = new Set(gameState.initialCoins);
+    gameState.visited = new Set([cellKey(gameState.startX, gameState.startY)]);
+    fx.moveFrom = null;
+    fx.facing = 'right';
+    fx.particles = [];
+    fx.explored = { cells: [], count: 0 };
     updateUI();
-    draw();
-    clearMessage();
+    requestRender();
 }
 
-function generateMaze() {
-    if (gameState.isCustomLevel) {
-        const data = JSON.parse(localStorage.getItem('customLevel'));
-        gameState.maze = data.maze.map(row => [...row]);
-        gameState.startX = data.startX;
-        gameState.startY = data.startY;
-        gameState.playerX = data.startX;
-        gameState.playerY = data.startY;
-        gameState.finishX = data.finishX;
-        gameState.finishY = data.finishY;
-        return;
-    }
+function updateLevelBanner() {
+    const info = gameState.levelInfo;
+    dom.levelTitle.textContent = gameState.customLevel
+        ? `★ ${info.title}`
+        : `Уровень ${gameState.level} из ${LEVELS.length} · ${info.title}`;
+    dom.levelGoal.textContent = info.goal;
 
-    const mazeTemplate = [
-        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-        [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-    ];
-
-    gameState.maze = mazeTemplate.map(row => [...row]);
+    const tags = [];
+    if (info.maxLines) tags.push(`<span class="tag tag-limit">⭐⭐⭐ ≤ ${info.maxLines} строк</span>`);
+    if (info.allowRepeat) tags.push('<span class="tag">🔁 repeat</span>');
+    if (info.allowNesting) tags.push('<span class="tag">🪆 цикл в цикле</span>');
+    dom.levelTags.innerHTML = tags.join('');
 }
 
-function placeObstacles() {
-    if (gameState.isCustomLevel) {
-        const data = JSON.parse(localStorage.getItem('customLevel'));
-        gameState.traps = new Set(data.traps);
-        gameState.collectedCoins = new Set(data.coins);
-        return;
+// ---------- Rendering ----------
+
+const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+
+// Draws one frame; returns true while an animation still needs more frames
+function draw(now = performance.now()) {
+    if (!boardView.layer) return false;
+    const { ctx, cellSize: cs, size } = boardView;
+    let animating = false;
+
+    ctx.clearRect(0, 0, size, size);
+    ctx.save();
+
+    const shake = (now - fx.shakeStart) / SHAKE_MS;
+    if (shake < 1) {
+        ctx.translate(Math.sin(now / 18) * 6 * (1 - shake), 0);
+        animating = true;
     }
 
-    const trapCount = gameState.level === 1 ? 1 : 4 + (gameState.level * 2);
-    const coinCount = gameState.level === 1 ? 2 : 5;
-    const passableCells = [];
+    ctx.drawImage(boardView.layer, 0, 0, size, size);
+    drawExplored(ctx, cs, fx.explored.cells, fx.explored.count);
+    drawTrail(ctx, cs, gameState.visited);
+    drawItems(ctx, cs, gameState.traps, gameState.coinCells);
 
-    for (let y = 1; y < GRID_SIZE - 1; y++) {
-        for (let x = 1; x < GRID_SIZE - 1; x++) {
-            if (gameState.maze[y][x] === 0 && !(x === gameState.startX && y === gameState.startY) && !(x === gameState.finishX && y === gameState.finishY)) {
-                passableCells.push([x, y]);
-            }
-        }
+    let heroX = gameState.playerX;
+    let heroY = gameState.playerY;
+    if (fx.moveFrom) {
+        const t = Math.min(1, Math.max(0, (now - fx.moveStart) / fx.moveDuration));
+        const e = easeOutCubic(t);
+        heroX = fx.moveFrom.x + (heroX - fx.moveFrom.x) * e;
+        heroY = fx.moveFrom.y + (heroY - fx.moveFrom.y) * e;
+        if (t < 1) animating = true;
+        else fx.moveFrom = null;
+    }
+    drawHero(ctx, heroX * cs + cs / 2, heroY * cs + cs / 2, cs, fx.facing, customCharacterImage);
+
+    if (fx.particles.length) {
+        fx.particles = drawParticles(ctx, fx.particles, now);
+        if (fx.particles.length) animating = true;
     }
 
-    passableCells.sort(() => Math.random() - 0.5);
-
-    for (let i = 0; i < Math.min(trapCount, passableCells.length); i++) {
-        const [x, y] = passableCells[i];
-        gameState.traps.add(`${x},${y}`);
-    }
-
-    for (let i = trapCount; i < trapCount + Math.min(coinCount, passableCells.length - trapCount); i++) {
-        const [x, y] = passableCells[i];
-        gameState.collectedCoins.add(`${x},${y}`);
-    }
+    ctx.restore();
+    return animating;
 }
 
-function draw() {
-    ctx.fillStyle = getColor('--path-color');
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Draw maze
-    for (let y = 0; y < GRID_SIZE; y++) {
-        for (let x = 0; x < GRID_SIZE; x++) {
-            if (gameState.maze[y][x] === 1) {
-                ctx.fillStyle = getColor('--wall-color');
-                ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-            }
-        }
-    }
-
-    // Draw traps
-    gameState.traps.forEach(trap => {
-        const [x, y] = trap.split(',').map(Number);
-        ctx.fillStyle = getColor('--trap-color');
-        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-        ctx.fillStyle = getColor('--text-primary');
-        ctx.font = '20px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('✕', x * CELL_SIZE + CELL_SIZE / 2, y * CELL_SIZE + CELL_SIZE / 2);
-    });
-
-    // Draw coins
-    gameState.collectedCoins.forEach(coin => {
-        const [x, y] = coin.split(',').map(Number);
-        ctx.fillStyle = getColor('--coin-color');
-        ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-        ctx.fillStyle = getColor('--text-primary');
-        ctx.font = '18px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText('★', x * CELL_SIZE + CELL_SIZE / 2, y * CELL_SIZE + CELL_SIZE / 2);
-    });
-
-    // Draw start
-    ctx.fillStyle = getColor('--start-color');
-    ctx.fillRect(gameState.startX * CELL_SIZE, gameState.startY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-    ctx.fillStyle = getColor('--bg-secondary');
-    ctx.font = 'bold 20px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('A', gameState.startX * CELL_SIZE + CELL_SIZE / 2, gameState.startY * CELL_SIZE + CELL_SIZE / 2);
-
-    // Draw finish
-    ctx.fillStyle = getColor('--finish-color');
-    ctx.fillRect(gameState.finishX * CELL_SIZE, gameState.finishY * CELL_SIZE, CELL_SIZE, CELL_SIZE);
-    ctx.fillStyle = getColor('--bg-secondary');
-    ctx.font = '24px Arial';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('🚩', gameState.finishX * CELL_SIZE + CELL_SIZE / 2, gameState.finishY * CELL_SIZE + CELL_SIZE / 2);
-
-    // Draw player
-    const playerX = gameState.playerX * CELL_SIZE;
-    const playerY = gameState.playerY * CELL_SIZE;
-
-    if (customCharacterImage && customCharacterImage.complete) {
-        // Draw custom character image
-        const padding = CELL_SIZE / 6;
-        ctx.drawImage(customCharacterImage, playerX + padding, playerY + padding, CELL_SIZE - padding * 2, CELL_SIZE - padding * 2);
-    } else {
-        // Draw default circle
-        ctx.fillStyle = getColor('--player-color');
-        ctx.beginPath();
-        ctx.arc(playerX + CELL_SIZE / 2, playerY + CELL_SIZE / 2, CELL_SIZE / 3, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    // Draw grid lines
-    ctx.strokeStyle = getColor('--border-color');
-    ctx.lineWidth = 1;
-
-    for (let x = 0; x <= GRID_SIZE; x++) {
-        ctx.beginPath();
-        ctx.moveTo(x * CELL_SIZE, 0);
-        ctx.lineTo(x * CELL_SIZE, GRID_SIZE * CELL_SIZE);
-        ctx.stroke();
-    }
-
-    for (let y = 0; y <= GRID_SIZE; y++) {
-        ctx.beginPath();
-        ctx.moveTo(0, y * CELL_SIZE);
-        ctx.lineTo(GRID_SIZE * CELL_SIZE, y * CELL_SIZE);
-        ctx.stroke();
-    }
+// Render on demand: frames are only requested while something changes
+function requestRender() {
+    if (fx.frameId === null) fx.frameId = requestAnimationFrame(renderFrame);
 }
 
-function getColor(cssVar) {
-    return getComputedStyle(document.documentElement).getPropertyValue(cssVar).trim();
+// Uses performance.now() rather than the rAF timestamp: the latter is the frame start and can
+// precede the moveStart/born times recorded by game logic, which would extrapolate backwards
+function renderFrame() {
+    fx.frameId = null;
+    if (draw(performance.now())) requestRender();
+}
+
+function spawnParticles(cellX, cellY, colors, count, options) {
+    if (reducedMotion.matches) return;
+    const cs = boardView.cellSize;
+    fx.particles.push(...createParticles((cellX + 0.5) * cs, (cellY + 0.5) * cs, colors, count, {
+        speed: cs * 2.8,
+        ...options
+    }));
+    requestRender();
+}
+
+// ---------- HUD, messages, logs ----------
+
+function setStat(el, value) {
+    const text = String(value);
+    if (el.textContent === text) return;
+    el.textContent = text;
+    if (reducedMotion.matches) return;
+    el.classList.remove('bump');
+    void el.offsetWidth; // restart the CSS animation
+    el.classList.add('bump');
 }
 
 function updateUI() {
-    stepCountDisplay.textContent = gameState.steps;
-    levelDisplay.textContent = gameState.level;
-    coinCountDisplay.textContent = gameState.coins;
-    lineCountDisplay.textContent = codeEditor.value.split('\n').filter(l => l.trim()).length;
+    const n = gameState.maze.length;
+    setStat(dom.stepCount, gameState.steps);
+    setStat(dom.coinCount, gameState.coins);
+    dom.levelDisplay.textContent = gameState.customLevel ? '★' : `${gameState.level}/${LEVELS.length}`;
+    dom.levelSize.textContent = `${n}×${n}`;
+    dom.coinTotal.textContent = gameState.initialCoins.length;
+}
+
+function updateLineCount() {
+    const lines = countCodeLines(dom.codeEditor.value);
+    const limit = gameState.levelInfo && gameState.levelInfo.maxLines;
+    dom.lineCount.textContent = lines;
+    dom.lineLimit.textContent = limit ? ` / ${limit}` : '';
+    dom.codeCounter.classList.toggle('over', Boolean(limit && lines > limit));
 }
 
 function showMessage(text, type = 'info') {
-    gameMessage.textContent = text;
-    gameMessage.className = `game-message ${type}`;
+    dom.gameMessage.textContent = text;
+    dom.gameMessage.className = `game-message ${type}`;
 }
 
 function clearMessage() {
-    gameMessage.textContent = '';
-    gameMessage.className = 'game-message';
+    dom.gameMessage.textContent = '';
+    dom.gameMessage.className = 'game-message';
 }
 
+const LOG_ICONS = { info: 'ℹ', success: '✓', error: '✕' };
+
 function addLog(message, type = 'info') {
-    const timestamp = new Date().toLocaleTimeString('ru-RU', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${type}`;
+    const timestamp = new Date().toLocaleTimeString('ru-RU', { hour12: false });
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
 
-    if (type === 'error') {
-        logEntry.textContent = `[${timestamp}] ❌ ${message}`;
-    } else if (type === 'success') {
-        logEntry.textContent = `[${timestamp}] ✓ ${message}`;
-    } else {
-        logEntry.textContent = `[${timestamp}] ℹ ${message}`;
+    const time = document.createElement('span');
+    time.className = 'log-time';
+    time.textContent = timestamp;
+    const icon = document.createElement('span');
+    icon.className = 'log-icon';
+    icon.textContent = LOG_ICONS[type] || LOG_ICONS.info;
+    const text = document.createElement('span');
+    text.textContent = message;
+    entry.append(time, icon, text);
+
+    dom.logsContent.appendChild(entry);
+    while (dom.logsContent.childElementCount > MAX_LOG_ENTRIES) {
+        dom.logsContent.firstElementChild.remove();
     }
-
-    logsContent.appendChild(logEntry);
-    logsContent.scrollTop = logsContent.scrollHeight;
+    dom.logsContent.scrollTop = dom.logsContent.scrollHeight;
 }
 
 function clearLogs() {
-    logsContent.innerHTML = '';
+    dom.logsContent.replaceChildren();
 }
 
-function updateLineNumbers(errorLineIndex = -1) {
-    const lines = codeEditor.value.split('\n');
-    lineNumbers.innerHTML = '';
+// ---------- Code editor ----------
 
-    lines.forEach((line, index) => {
-        const lineNum = document.createElement('div');
-        lineNum.className = 'line-number';
-        lineNum.id = `line-${index + 1}`;
+// Rebuilds the gutter only when the number of lines changes
+function updateLineNumbers() {
+    const count = dom.codeEditor.value.split('\n').length;
+    if (count !== dom.lineNumbers.childElementCount) {
+        const { index, kind, loops } = lineHighlight;
+        clearLineHighlight();
+        let html = '';
+        for (let i = 1; i <= count; i++) html += `<div class="line-number">${i}</div>`;
+        dom.lineNumbers.innerHTML = html;
+        if (index >= 0 && index < count) highlightLine(index, kind, loops);
+    }
+    syncEditorScroll();
+}
 
-        if (errorLineIndex === index) {
-            lineNum.classList.add('error');
-            lineNum.innerHTML = `❌ ${index + 1}`;
-        } else if (index === gameState.currentCommandIndex) {
-            lineNum.classList.add('executing');
-            lineNum.innerHTML = `▶ ${index + 1}`;
-        } else {
-            lineNum.textContent = index + 1;
+// Marks the running (or failing) line; enclosing repeat lines show their iteration, e.g. "2/8"
+function highlightLine(index, kind, loops = []) {
+    clearLineHighlight();
+    const gutter = dom.lineNumbers.children;
+    if (gutter[index]) gutter[index].classList.add(kind);
+    for (const loop of loops) {
+        const el = gutter[loop.lineIndex];
+        if (!el) continue;
+        el.classList.add('loop');
+        el.textContent = `${loop.iteration}/${loop.times}`;
+    }
+    lineHighlight = { index, kind, loops };
+
+    // Keep the highlighted line visible inside the textarea
+    const { lineHeight, padTop } = editorMetrics;
+    const top = padTop + index * lineHeight;
+    const editor = dom.codeEditor;
+    if (top < editor.scrollTop) editor.scrollTop = top - padTop;
+    else if (top + lineHeight > editor.scrollTop + editor.clientHeight) {
+        editor.scrollTop = top + lineHeight - editor.clientHeight + padTop;
+    }
+
+    dom.execHighlight.className = `exec-highlight ${kind}`;
+    syncEditorScroll();
+}
+
+function clearLineHighlight() {
+    const gutter = dom.lineNumbers.children;
+    if (lineHighlight.index >= 0 && gutter[lineHighlight.index]) {
+        gutter[lineHighlight.index].classList.remove('executing', 'error');
+    }
+    for (const loop of lineHighlight.loops) {
+        const el = gutter[loop.lineIndex];
+        if (!el) continue;
+        el.classList.remove('loop');
+        el.textContent = loop.lineIndex + 1;
+    }
+    lineHighlight = { index: -1, kind: '', loops: [] };
+    dom.execHighlight.className = 'exec-highlight';
+}
+
+function syncEditorScroll() {
+    dom.lineNumbers.scrollTop = dom.codeEditor.scrollTop;
+    if (lineHighlight.index >= 0) {
+        const y = editorMetrics.padTop + lineHighlight.index * editorMetrics.lineHeight - dom.codeEditor.scrollTop;
+        dom.execHighlight.style.left = `${dom.lineNumbers.offsetWidth}px`;
+        dom.execHighlight.style.transform = `translateY(${y}px)`;
+    }
+}
+
+function setEditorCode(code) {
+    dom.codeEditor.value = code;
+    clearLineHighlight();
+    updateLineNumbers();
+    updateLineCount();
+}
+
+// Tab indents with 4 spaces; Enter after "{" keeps the indent and adds one level
+function handleEditorKeys(e) {
+    const editor = dom.codeEditor;
+    if (editor.readOnly) return;
+    const { selectionStart: start, selectionEnd: end, value } = editor;
+
+    if (e.key === 'Tab' && !e.shiftKey) {
+        e.preventDefault();
+        editor.setRangeText('    ', start, end, 'end');
+        editor.dispatchEvent(new Event('input'));
+    } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey) {
+        const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+        const line = value.slice(lineStart, start);
+        let indent = line.match(/^\s*/)[0];
+        if (stripComment(line).endsWith('{')) indent += '    ';
+        if (!indent) return;
+        e.preventDefault();
+        editor.setRangeText(`\n${indent}`, start, end, 'end');
+        editor.dispatchEvent(new Event('input'));
+    } else if (e.key === '}') {
+        // Typing "}" on an indented empty line removes one indent level
+        const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+        const before = value.slice(lineStart, start);
+        if (start === end && /^ {4,}$/.test(before)) {
+            e.preventDefault();
+            editor.setRangeText(`${before.slice(4)}}`, lineStart, start, 'end');
+            editor.dispatchEvent(new Event('input'));
         }
-
-        lineNumbers.appendChild(lineNum);
-    });
+    }
 }
 
 function copyCode() {
-    const code = codeEditor.value;
+    const code = dom.codeEditor.value;
     if (!code) {
         showMessage('Нет кода для копирования', 'error');
         return;
@@ -360,18 +624,22 @@ function copyCode() {
         addLog('Код скопирован в буфер обмена', 'success');
     }).catch(() => {
         showMessage('Ошибка копирования', 'error');
-        addLog('Error: Не удалось скопировать код', 'error');
+        addLog('Не удалось скопировать код', 'error');
     });
 }
 
+// ---------- Modals ----------
+
 function showTutorial() {
-    tutorialModal.classList.remove('hidden');
+    dom.tutorialModal.classList.remove('hidden');
+    dom.startGameButton.focus();
 }
 
 function hideTutorial() {
-    tutorialModal.classList.add('hidden');
-    localStorage.setItem('tutorialSeen', 'true');
+    dom.tutorialModal.classList.add('hidden');
 }
+
+// ---------- Timer ----------
 
 function startTimer() {
     if (gameState.timerInterval) return;
@@ -388,728 +656,477 @@ function stopTimer() {
     }
 }
 
+function formatTime(seconds) {
+    return `${Math.floor(seconds / 60)}:${(seconds % 60).toString().padStart(2, '0')}`;
+}
+
 function updateTimerDisplay() {
-    const minutes = Math.floor(gameState.timer / 60);
-    const seconds = gameState.timer % 60;
-    timerDisplay.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    dom.timerDisplay.textContent = formatTime(gameState.timer);
+}
+
+// ---------- Code execution ----------
+
+function compileCurrentCode() {
+    return compileProgram(dom.codeEditor.value, gameState.levelInfo);
+}
+
+function reportError(lineIndex, message) {
+    const text = `Ошибка на строке ${lineIndex + 1}: ${message}`;
+    addLog(text, 'error');
+    showMessage(text, 'error');
+    highlightLine(lineIndex, 'error');
+}
+
+function setRunning(running) {
+    gameState.isRunning = running;
+    dom.runButton.textContent = running ? '■ Стоп' : '▶ Выполнить';
+    dom.runButton.classList.toggle('is-running', running);
+    dom.codeEditor.readOnly = running;
+    dom.hintButton.disabled = running;
+    dom.demoButton.disabled = running;
+    dom.solverSelect.disabled = running;
+}
+
+const isCurrentRun = runId => runId === gameState.runId && gameState.isRunning;
+
+function describeStep(step, index) {
+    const loop = step.loops[step.loops.length - 1];
+    return `Шаг ${index + 1}: ${step.text}${loop ? ` · виток ${loop.iteration}/${loop.times}` : ''}`;
 }
 
 async function executeCode() {
-    const code = codeEditor.value;
-    const lines = code.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('//'));
+    if (gameState.isRunning) {
+        stopExecution();
+        return;
+    }
 
-    if (lines.length === 0) {
+    clearLogs();
+    clearMessage();
+    clearLineHighlight();
+
+    // The whole program is checked up front so the hero never moves on broken code
+    const { steps, error } = compileCurrentCode();
+    if (error) {
+        reportError(error.lineIndex, error.message);
+        return;
+    }
+    if (steps.length === 0) {
         addLog('Нет команд для выполнения', 'error');
         showMessage('Нет команд для выполнения', 'error');
         return;
     }
 
-    gameState.isRunning = true;
-    runButton.disabled = true;
-    clearMessage();
-    clearLogs();
+    const runId = ++gameState.runId;
+    const stepDelay = gameState.settings.speed;
+    fx.moveDuration = Math.min(MOVE_ANIMATION_MS, stepDelay * 0.6);
+    resetHero();
+    setRunning(true);
     startTimer();
+    addLog(`Начато выполнение программы (${steps.length} шагов)`, 'info');
 
-    addLog(`Начато выполнение программы (${lines.length} команд)`, 'info');
-
-    const hero = {
-        up: () => movePlayer(0, -1),
-        down: () => movePlayer(0, 1),
-        left: () => movePlayer(-1, 0),
-        right: () => movePlayer(1, 0),
-        finish: () => checkFinish()
-    };
-
-    for (let i = 0; i < lines.length && gameState.isRunning; i++) {
-        gameState.currentCommandIndex = i;
-        updateLineNumbers();
-        const line = lines[i];
+    let outcome = 'incomplete';
+    for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        highlightLine(step.lineIndex, 'executing', step.loops);
 
         try {
-            const match = line.match(/hero\.(\w+)\(\)/);
-            if (!match) {
-                throw new Error(`Невалидная команда: ${line}`);
+            if (runCommand(step.command) === 'finish') {
+                addLog(`${describeStep(step, i)} — финиш достигнут! 🎉`, 'success');
+                outcome = 'victory';
+                break;
             }
-
-            const command = match[1];
-            if (hero[command]) {
-                const result = hero[command]();
-                if (result === 'finish') {
-                    addLog(`Команда ${i + 1}: ${line} - Финиш достигнут! 🎉`, 'success');
-                    stopTimer();
-                    gameState.isRunning = false;
-                    gameState.currentCommandIndex = -1;
-                    updateLineNumbers(-1);
-                    showVictoryModal();
-                    break;
-                } else {
-                    addLog(`Команда ${i + 1}: ${line}`, 'success');
-                }
-            } else {
-                throw new Error(`Неизвестная команда: ${command}()`);
-            }
-
-            draw();
-            await new Promise(resolve => setTimeout(resolve, EXECUTION_DELAY));
-        } catch (error) {
-            const errorMsg = `Ошибка на строке ${i + 1}: ${error.message}`;
-            addLog(`Error: ${errorMsg}`, 'error');
-            showMessage(errorMsg, 'error');
-            gameState.isRunning = false;
-            gameState.currentCommandIndex = -1;
-            updateLineNumbers(i);
+            addLog(describeStep(step, i), 'success');
+        } catch (err) {
+            reportError(step.lineIndex, err.message);
+            outcome = 'error';
             break;
         }
+
+        await delay(stepDelay);
+        if (!isCurrentRun(runId)) return;
     }
 
-    // Проверяем финиш после выполнения всех команд
-    if (gameState.isRunning === true && gameState.currentCommandIndex >= lines.length) {
-        if (gameState.playerX === gameState.finishX && gameState.playerY === gameState.finishY) {
-            addLog('Программа завершена - Финиш достигнут! 🎉', 'success');
-            stopTimer();
-            gameState.isRunning = false;
-            gameState.currentCommandIndex = -1;
-            updateLineNumbers(-1);
-            showVictoryModal();
+    if (outcome === 'incomplete') {
+        if (isOnFinish()) {
+            addLog('Программа завершена — финиш достигнут! 🎉', 'success');
+            outcome = 'victory';
         } else {
-            addLog('Error: Программа завершена, но герой не на финише!', 'error');
+            addLog('Программа завершена, но герой не на финише', 'error');
             showMessage('Программа закончилась, но вы не достигли финиша 🚩', 'error');
-            gameState.isRunning = false;
-            gameState.currentCommandIndex = -1;
-            updateLineNumbers(-1);
         }
     }
 
-    if (gameState.isRunning === false && !victoryModal.classList.contains('active')) {
-        gameState.isRunning = false;
-        runButton.disabled = false;
-    }
+    setRunning(false);
+    if (outcome !== 'error') clearLineHighlight();
+    if (outcome === 'victory') winLevel();
+}
+
+function runCommand(command) {
+    if (command === 'finish') return checkFinish();
+    const [dx, dy] = MOVES[command];
+    movePlayer(dx, dy);
+}
+
+function getMoveError(x, y, maze = gameState.maze) {
+    if (!isInside(maze, x, y)) return 'Выход за границы поля';
+    if (maze[y][x] === 1) return 'Столкновение со стеной';
+    return null;
 }
 
 function movePlayer(dx, dy) {
     const newX = gameState.playerX + dx;
     const newY = gameState.playerY + dy;
+    fx.facing = Object.keys(MOVES).find(dir => MOVES[dir][0] === dx && MOVES[dir][1] === dy);
 
-    if (newX < 0 || newX >= GRID_SIZE || newY < 0 || newY >= GRID_SIZE) {
-        throw new Error('Выход за границы поля');
+    const error = getMoveError(newX, newY);
+    if (error) {
+        fx.shakeStart = reducedMotion.matches ? -Infinity : performance.now();
+        requestRender();
+        throw new Error(error);
     }
 
-    if (gameState.maze[newY][newX] === 1) {
-        throw new Error('Столкновение со стеной');
+    if (!reducedMotion.matches) {
+        fx.moveFrom = { x: gameState.playerX, y: gameState.playerY };
+        fx.moveStart = performance.now();
     }
-
     gameState.playerX = newX;
     gameState.playerY = newY;
     gameState.steps++;
-    updateUI();
 
-    const cellKey = `${newX},${newY}`;
-    if (gameState.traps.has(cellKey)) {
-        gameState.steps += 5;
-        gameState.traps.delete(cellKey);
-        showMessage('⚠️ Ловушка! +5 шагов', 'error');
-        updateUI();
+    const key = cellKey(newX, newY);
+    gameState.visited.add(key);
+
+    if (gameState.traps.has(key)) {
+        gameState.steps += TRAP_PENALTY;
+        gameState.traps.delete(key);
+        showMessage(`⚠️ Ловушка! +${TRAP_PENALTY} шагов`, 'error');
+        spawnParticles(newX, newY, [palette.trap], 14);
     }
 
-    if (gameState.collectedCoins.has(cellKey)) {
+    if (gameState.coinCells.has(key)) {
         gameState.coins++;
-        gameState.collectedCoins.delete(cellKey);
+        gameState.coinCells.delete(key);
         showMessage('💰 Монета собрана!', 'success');
-        updateUI();
+        spawnParticles(newX, newY, [palette.coin, palette.coinLight], 16);
     }
 
-    if (newX === gameState.finishX && newY === gameState.finishY) {
+    if (isOnFinish()) {
         showMessage('🚩 Вы достигли финиша!', 'success');
     }
+
+    updateUI();
+    requestRender();
+}
+
+function isOnFinish() {
+    return gameState.playerX === gameState.finishX && gameState.playerY === gameState.finishY;
 }
 
 function checkFinish() {
-    if (gameState.playerX === gameState.finishX && gameState.playerY === gameState.finishY) {
-        return 'finish';
-    } else {
-        throw new Error('Вы не на финише');
-    }
+    if (!isOnFinish()) throw new Error('Вы не на финише');
+    return 'finish';
 }
 
 function stopExecution() {
-    gameState.isRunning = false;
+    gameState.runId++;
+    setRunning(false);
     stopTimer();
-    gameState.currentCommandIndex = -1;
-    updateLineNumbers(-1);
-    runButton.disabled = false;
+    clearLineHighlight();
     addLog('Выполнение остановлено пользователем', 'info');
 }
 
-function showVictoryModal() {
-    document.getElementById('modalSteps').textContent = gameState.steps;
-    document.getElementById('modalTime').textContent = timerDisplay.textContent;
-    document.getElementById('modalCoins').textContent = gameState.coins;
-    document.getElementById('modalCommands').textContent = codeEditor.value.split('\n').filter(l => l.trim()).length;
-    victoryModal.classList.add('active');
+function resetLevel() {
+    if (gameState.isRunning) {
+        gameState.runId++;
+        setRunning(false);
+    }
+    stopTimer();
+    gameState.timer = 0;
+    updateTimerDisplay();
+    resetHero();
+    clearMessage();
+    clearLineHighlight();
+    addLog('Персонаж сброшен на стартовую позицию', 'info');
+}
+
+// Stars: 3 for the shortest path, 2 within 1.5×, else 1; exceeding the line limit caps at 2
+function calcStars(lines) {
+    const { steps, optimalSteps, levelInfo } = gameState;
+    let stars = 1;
+    if (steps <= optimalSteps) stars = 3;
+    else if (steps <= Math.ceil(optimalSteps * 1.5)) stars = 2;
+    if (levelInfo.maxLines && lines > levelInfo.maxLines) stars = Math.min(stars, 2);
+    return stars;
+}
+
+function winLevel() {
+    stopTimer();
+    const lines = countCodeLines(dom.codeEditor.value);
+    const stars = calcStars(lines);
+    recordVictory(stars);
+    spawnParticles(gameState.finishX, gameState.finishY, CONFETTI_COLORS, 90, {
+        speed: boardView.cellSize * 6.4, gravity: 420, life: 1500
+    });
+    setTimeout(() => showVictoryModal(stars, lines), reducedMotion.matches ? 0 : 650);
+}
+
+function showVictoryModal(stars, lines) {
+    const { maxLines } = gameState.levelInfo;
+    dom.modalSteps.textContent = gameState.steps;
+    dom.modalOptimal.textContent = gameState.optimalSteps;
+    dom.modalTime.textContent = formatTime(gameState.timer);
+    dom.modalCoins.textContent = `${gameState.coins} / ${gameState.initialCoins.length}`;
+    dom.modalLines.textContent = maxLines ? `${lines} / ${maxLines}` : lines;
+    [...dom.modalStars.children].forEach((star, i) => star.classList.toggle('earned', i < stars));
+
+    const notes = [];
+    if (gameState.steps > gameState.optimalSteps) notes.push('Есть путь короче — попробуйте найти его.');
+    if (maxLines && lines > maxLines) notes.push(`Уложитесь в ${maxLines} строк с помощью repeat — и получите ⭐⭐⭐.`);
+    dom.modalNote.textContent = notes.join(' ');
+
+    const isLast = !gameState.customLevel && gameState.level >= LEVELS.length;
+    dom.nextLevelButton.textContent = gameState.customLevel ? 'К кампании' : isLast ? '🏆 Завершить' : 'Следующий уровень';
+    dom.victoryModal.classList.remove('hidden');
+    dom.nextLevelButton.focus();
 }
 
 function nextLevel() {
-    gameState.isCustomLevel = false;
-    gameState.level++;
-    victoryModal.classList.remove('active');
-    codeEditor.value = '';
-    lineCountDisplay.textContent = '0';
-    gameState.currentCommandIndex = -1;
+    dom.victoryModal.classList.add('hidden');
+    if (gameState.customLevel) {
+        gameState.customLevel = null;
+        gameState.level = Math.min(gameState.player.progress.level, LEVELS.length);
+    } else if (gameState.level >= LEVELS.length) {
+        showCampaignComplete();
+        return;
+    } else {
+        gameState.level++;
+    }
+    setEditorCode('');
     initGame();
-    updateLineNumbers(-1);
+    const n = gameState.maze.length;
+    addLog(`Уровень ${gameState.level}: ${gameState.levelInfo.title} (${n}×${n})`, 'info');
 }
 
 function restartLevel() {
-    victoryModal.classList.remove('active');
-    codeEditor.value = '';
-    lineCountDisplay.textContent = '0';
-    gameState.currentCommandIndex = -1;
+    dom.victoryModal.classList.add('hidden');
     initGame();
-    updateLineNumbers(-1);
 }
 
-// BFS for pathfinding
-function bfs(startX, startY, endX, endY) {
-    const queue = [[startX, startY, []]];
-    const visited = new Set();
-    visited.add(`${startX},${startY}`);
+// ---------- Demo (auto-solve) mode ----------
 
-    while (queue.length > 0) {
-        const [x, y, path] = queue.shift();
+// Animates a solver strategy: first the cells it examined, then the hero walking its route
+async function runDemo() {
+    if (gameState.isRunning) return;
 
-        if (x === endX && y === endY) {
-            return path;
-        }
+    const solver = SOLVERS[dom.solverSelect.value];
+    const result = solver.solve(
+        gameState.maze,
+        { x: gameState.startX, y: gameState.startY },
+        { x: gameState.finishX, y: gameState.finishY }
+    );
 
-        const directions = [
-            [0, -1, 'up'],
-            [0, 1, 'down'],
-            [1, 0, 'right'],
-            [-1, 0, 'left']
-        ];
+    const runId = ++gameState.runId;
+    clearLogs();
+    clearMessage();
+    clearLineHighlight();
+    resetHero();
+    setRunning(true);
+    addLog(`Демо: ${solver.name}`, 'info');
 
-        for (const [dx, dy, dir] of directions) {
-            const nx = x + dx, ny = y + dy;
-            const key = `${nx},${ny}`;
+    // Phase 1: exploration wave, about a second long regardless of maze size
+    fx.explored = { cells: result.explored, count: 0 };
+    const batch = Math.max(1, Math.ceil(result.explored.length / 50));
+    for (let i = 0; i < result.explored.length; i += batch) {
+        fx.explored.count = Math.min(result.explored.length, i + batch);
+        requestRender();
+        await delay(reducedMotion.matches ? 0 : 20);
+        if (!isCurrentRun(runId)) return;
+    }
+    addLog(`Исследовано клеток: ${result.explored.length}`, 'info');
 
-            if (nx >= 0 && nx < GRID_SIZE && ny >= 0 && ny < GRID_SIZE &&
-                !visited.has(key) && gameState.maze[ny][nx] === 0) {
-                visited.add(key);
-                queue.push([nx, ny, [...path, dir]]);
-            }
-        }
+    // Phase 2: the hero walks the route, sped up for very long routes
+    const stepDelay = Math.max(25, Math.min(gameState.settings.speed / 2, DEMO_MAX_WALK_MS / Math.max(1, result.moves.length)));
+    fx.moveDuration = Math.min(MOVE_ANIMATION_MS, stepDelay * 0.8);
+    for (const dir of result.moves) {
+        movePlayer(...MOVES[dir]);
+        await delay(stepDelay);
+        if (!isCurrentRun(runId)) return;
     }
 
-    return null;
+    setRunning(false);
+    if (result.solved) {
+        const summary = `${solver.name}: шагов — ${result.moves.length}, исследовано клеток — ${result.explored.length}`;
+        addLog(summary, 'success');
+        addLog(`Кратчайший путь: ${gameState.optimalSteps}`, 'info');
+        showMessage(`🤖 ${summary}`, 'info');
+    } else {
+        addLog(`${solver.name}: ${result.reason}`, 'error');
+        showMessage(`🤖 ${result.reason}`, 'error');
+    }
 }
+
+// ---------- Hints ----------
 
 function pathToCommands(directions, limit = null) {
-    let commands = directions.map(dir => `hero.${dir}();`);
-    if (limit && commands.length > limit) {
-        commands = commands.slice(0, limit);
-    }
-    return commands;
+    const commands = directions.map(dir => `hero.${dir}();`);
+    return limit ? commands.slice(0, limit) : commands;
 }
 
 function generateHint() {
-    const path = bfs(gameState.playerX, gameState.playerY, gameState.finishX, gameState.finishY);
-    if (!path) {
-        showMessage('Нет пути до финиша', 'error');
-        addLog('Error: Нет пути до финиша', 'error');
+    if (gameState.isRunning) return;
+
+    const { steps, error } = compileCurrentCode();
+    if (error) {
+        reportError(error.lineIndex, error.message);
         return;
     }
 
-    const commands = pathToCommands(path, 5);
-    const text = commands.join('\n');
-    insertCodeIntoEditor(text);
-    showMessage('💡 Подсказка добавлена в конец кода', 'info');
+    // Dry-run the current code (loops included) to continue from where it ends
+    const end = simulateSteps({ ...gameState, traps: gameState.initialTraps }, steps);
+    if (end.error) {
+        reportError(end.error.lineIndex, `${end.error.message} — исправьте, чтобы получить подсказку`);
+        return;
+    }
+    if (end.finished) {
+        showMessage('Ваш код уже проходит уровень — нажмите «Выполнить»', 'info');
+        return;
+    }
+
+    const path = bfs(gameState.maze, end.x, end.y, gameState.finishX, gameState.finishY);
+    if (!path) {
+        showMessage('Нет пути до финиша', 'error');
+        addLog('Нет пути до финиша', 'error');
+        return;
+    }
+
+    const commands = pathToCommands(path, HINT_LENGTH);
+    if (path.length <= HINT_LENGTH) commands.push('hero.finish();');
+    insertCodeIntoEditor(commands.join('\n'));
+    const tip = gameState.levelInfo.allowRepeat ? ' Повторы можно свернуть в repeat.' : '';
+    showMessage(`💡 Подсказка добавлена в конец кода.${tip}`, 'info');
     addLog(`Подсказка добавлена (${commands.length} команд)`, 'info');
 }
 
 function insertCodeIntoEditor(code) {
-    if (codeEditor.value && !codeEditor.value.endsWith('\n')) {
-        codeEditor.value += '\n';
-    }
-    codeEditor.value += code;
-    const codeLines = codeEditor.value.split('\n').filter(l => l.trim()).length;
-    lineCountDisplay.textContent = codeLines;
-    updateLineNumbers(-1);
+    let value = dom.codeEditor.value;
+    if (value && !value.endsWith('\n')) value += '\n';
+    setEditorCode(value + code);
+    dom.codeEditor.scrollTop = dom.codeEditor.scrollHeight;
+    syncEditorScroll();
 }
 
-// Level Editor Functions
-function openLevelEditor() {
-    editorModal.classList.remove('hidden');
-    if (!editorState.initialized) {
-        initEditorCanvas();
-        if (localStorage.getItem('customLevel')) {
-            loadCustomLevelIntoEditor();
-        } else {
-            clearEditorMaze();
-        }
-        editorState.initialized = true;
-    }
-    loadMapsFromServer();
-}
-
-function closeLevelEditor() {
-    editorModal.classList.add('hidden');
-}
-
-function initEditorCanvas() {
-    editorCanvas.addEventListener('mousedown', handleEditorMouseDown);
-    editorCanvas.addEventListener('mousemove', handleEditorMouseMove);
-    editorCanvas.addEventListener('mouseup', handleEditorMouseUp);
-    editorCanvas.addEventListener('mouseleave', handleEditorMouseLeave);
-}
-
-function clearEditorMaze() {
-    editorState.maze = [];
-    for (let y = 0; y < GRID_SIZE; y++) {
-        editorState.maze[y] = [];
-        for (let x = 0; x < GRID_SIZE; x++) {
-            if (x === 0 || x === GRID_SIZE - 1 || y === 0 || y === GRID_SIZE - 1) {
-                editorState.maze[y][x] = 1;
-            } else {
-                editorState.maze[y][x] = 0;
-            }
-        }
-    }
-    editorState.startX = 1;
-    editorState.startY = 1;
-    editorState.finishX = 10;
-    editorState.finishY = 3;
-    editorState.traps = new Set();
-    editorState.coins = new Set();
-    editorMessage.textContent = '';
-    editorMessage.className = 'editor-message';
-    drawEditorMaze();
-}
-
-function drawEditorMaze() {
-    editorCtx.fillStyle = getColor('--path-color');
-    editorCtx.fillRect(0, 0, editorCanvas.width, editorCanvas.height);
-
-    for (let y = 0; y < GRID_SIZE; y++) {
-        for (let x = 0; x < GRID_SIZE; x++) {
-            if (editorState.maze[y][x] === 1) {
-                editorCtx.fillStyle = getColor('--wall-color');
-                editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
-            }
-        }
-    }
-
-    editorState.traps.forEach(trap => {
-        const [x, y] = trap.split(',').map(Number);
-        editorCtx.fillStyle = getColor('--trap-color');
-        editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
-        editorCtx.fillStyle = getColor('--text-primary');
-        editorCtx.font = '16px Arial';
-        editorCtx.textAlign = 'center';
-        editorCtx.textBaseline = 'middle';
-        editorCtx.fillText('✕', x * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, y * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
-    });
-
-    editorState.coins.forEach(coin => {
-        const [x, y] = coin.split(',').map(Number);
-        editorCtx.fillStyle = getColor('--coin-color');
-        editorCtx.fillRect(x * EDITOR_CELL_SIZE, y * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
-        editorCtx.fillStyle = getColor('--text-primary');
-        editorCtx.font = '14px Arial';
-        editorCtx.textAlign = 'center';
-        editorCtx.textBaseline = 'middle';
-        editorCtx.fillText('★', x * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, y * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
-    });
-
-    editorCtx.fillStyle = getColor('--start-color');
-    editorCtx.fillRect(editorState.startX * EDITOR_CELL_SIZE, editorState.startY * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
-    editorCtx.fillStyle = getColor('--bg-secondary');
-    editorCtx.font = 'bold 14px Arial';
-    editorCtx.textAlign = 'center';
-    editorCtx.textBaseline = 'middle';
-    editorCtx.fillText('A', editorState.startX * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, editorState.startY * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
-
-    editorCtx.fillStyle = getColor('--finish-color');
-    editorCtx.fillRect(editorState.finishX * EDITOR_CELL_SIZE, editorState.finishY * EDITOR_CELL_SIZE, EDITOR_CELL_SIZE, EDITOR_CELL_SIZE);
-    editorCtx.fillStyle = getColor('--bg-secondary');
-    editorCtx.font = '16px Arial';
-    editorCtx.textAlign = 'center';
-    editorCtx.textBaseline = 'middle';
-    editorCtx.fillText('🚩', editorState.finishX * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2, editorState.finishY * EDITOR_CELL_SIZE + EDITOR_CELL_SIZE / 2);
-
-    editorCtx.strokeStyle = getColor('--border-color');
-    editorCtx.lineWidth = 1;
-    for (let i = 0; i <= GRID_SIZE; i++) {
-        editorCtx.beginPath();
-        editorCtx.moveTo(i * EDITOR_CELL_SIZE, 0);
-        editorCtx.lineTo(i * EDITOR_CELL_SIZE, editorCanvas.height);
-        editorCtx.stroke();
-        editorCtx.beginPath();
-        editorCtx.moveTo(0, i * EDITOR_CELL_SIZE);
-        editorCtx.lineTo(editorCanvas.width, i * EDITOR_CELL_SIZE);
-        editorCtx.stroke();
-    }
-}
-
-function getCellFromEvent(e) {
-    const rect = editorCanvas.getBoundingClientRect();
-    const scrollParent = editorCanvas.parentElement.parentElement; // editor-modal-content
-    const scrollX = scrollParent ? scrollParent.scrollLeft : 0;
-    const scrollY = scrollParent ? scrollParent.scrollTop : 0;
-
-    // Учитываем DPI масштабирование
-    const dpiX = editorCanvas.width / rect.width;
-    const dpiY = editorCanvas.height / rect.height;
-
-    const x = Math.floor((e.clientX - rect.left + scrollX) * dpiX / EDITOR_CELL_SIZE);
-    const y = Math.floor((e.clientY - rect.top + scrollY) * dpiY / EDITOR_CELL_SIZE);
-
-    console.log(`Canvas internal: ${editorCanvas.width}x${editorCanvas.height}, Display: ${rect.width}x${rect.height}, DPI: [${dpiX.toFixed(2)}, ${dpiY.toFixed(2)}], Cell: [${x}, ${y}]`);
-    return { x, y };
-}
-
-function handleEditorMouseDown(e) {
-    editorState.isDrawing = true;
-    const { x, y } = getCellFromEvent(e);
-    applyEditorTool(x, y);
-}
-
-function handleEditorMouseMove(e) {
-    if (editorState.isDrawing) {
-        const { x, y } = getCellFromEvent(e);
-        applyEditorTool(x, y);
-    }
-}
-
-function handleEditorMouseUp() {
-    editorState.isDrawing = false;
-}
-
-function handleEditorMouseLeave() {
-    editorState.isDrawing = false;
-}
-
-function applyEditorTool(cellX, cellY) {
-    console.log(`applyEditorTool: [${cellX}, ${cellY}], Tool: ${editorState.currentTool}`);
-
-    if (cellX < 0 || cellX >= GRID_SIZE || cellY < 0 || cellY >= GRID_SIZE) {
-        console.warn(`Out of bounds: [${cellX}, ${cellY}]`);
-        return;
-    }
-
-    const tool = editorState.currentTool;
-
-    if (tool === 'wall') {
-        editorState.maze[cellY][cellX] = 1;
-        editorState.traps.delete(`${cellX},${cellY}`);
-        editorState.coins.delete(`${cellX},${cellY}`);
-    } else if (tool === 'path') {
-        editorState.maze[cellY][cellX] = 0;
-        editorState.traps.delete(`${cellX},${cellY}`);
-        editorState.coins.delete(`${cellX},${cellY}`);
-    } else if (tool === 'start') {
-        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
-        editorState.startX = cellX;
-        editorState.startY = cellY;
-        editorState.maze[cellY][cellX] = 0;
-        editorState.traps.delete(`${cellX},${cellY}`);
-        editorState.coins.delete(`${cellX},${cellY}`);
-    } else if (tool === 'finish') {
-        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
-        editorState.finishX = cellX;
-        editorState.finishY = cellY;
-        editorState.maze[cellY][cellX] = 0;
-        editorState.traps.delete(`${cellX},${cellY}`);
-        editorState.coins.delete(`${cellX},${cellY}`);
-    } else if (tool === 'trap') {
-        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
-        if (editorState.maze[cellY][cellX] === 0 &&
-            !(cellX === editorState.startX && cellY === editorState.startY) &&
-            !(cellX === editorState.finishX && cellY === editorState.finishY)) {
-            editorState.traps.add(`${cellX},${cellY}`);
-            editorState.coins.delete(`${cellX},${cellY}`);
-        }
-    } else if (tool === 'coin') {
-        if (cellX === 0 || cellX === GRID_SIZE - 1 || cellY === 0 || cellY === GRID_SIZE - 1) return;
-        if (editorState.maze[cellY][cellX] === 0 &&
-            !(cellX === editorState.startX && cellY === editorState.startY) &&
-            !(cellX === editorState.finishX && cellY === editorState.finishY)) {
-            editorState.coins.add(`${cellX},${cellY}`);
-            editorState.traps.delete(`${cellX},${cellY}`);
-        }
-    }
-
-    drawEditorMaze();
-}
-
-function validateEditorMaze() {
-    const savedMaze = gameState.maze;
-    gameState.maze = editorState.maze.map(row => [...row]);
-    const path = bfs(editorState.startX, editorState.startY, editorState.finishX, editorState.finishY);
-    gameState.maze = savedMaze;
-    return path !== null && path.length > 0;
-}
-
-async function saveCustomLevel() {
-    if (!validateEditorMaze()) {
-        editorMessage.textContent = '❌ Нет пути от стартовой позиции до финиша!';
-        editorMessage.className = 'editor-message error';
-        return false;
-    }
-
-    const name = mapNameInput.value.trim() || `Map ${new Date().toLocaleString('ru')}`;
-    const data = {
-        name,
-        maze: editorState.maze,
-        startX: editorState.startX,
-        startY: editorState.startY,
-        finishX: editorState.finishX,
-        finishY: editorState.finishY,
-        traps: Array.from(editorState.traps),
-        coins: Array.from(editorState.coins)
-    };
-
-    localStorage.setItem('customLevel', JSON.stringify(data));
-
-    try {
-        const res = await fetch('/api/maps', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(data)
-        });
-
-        if (res.ok) {
-            editorMessage.textContent = '✅ Карта сохранена!';
-            editorMessage.className = 'editor-message success';
-            mapNameInput.value = name;
-            loadMapsFromServer();
-            return true;
-        } else {
-            editorMessage.textContent = '❌ Ошибка сохранения на сервер';
-            editorMessage.className = 'editor-message error';
-            return false;
-        }
-    } catch (err) {
-        editorMessage.textContent = '❌ Ошибка соединения с сервером';
-        editorMessage.className = 'editor-message error';
-        return false;
-    }
-}
-
-function loadCustomLevelIntoEditor() {
-    const saved = localStorage.getItem('customLevel');
-    if (!saved) {
-        clearEditorMaze();
-        return;
-    }
-
-    const data = JSON.parse(saved);
-    editorState.maze = data.maze.map(row => [...row]);
-    editorState.startX = data.startX;
-    editorState.startY = data.startY;
-    editorState.finishX = data.finishX;
-    editorState.finishY = data.finishY;
-    editorState.traps = new Set(data.traps);
-    editorState.coins = new Set(data.coins);
-    editorMessage.textContent = '✅ Уровень загружен!';
-    editorMessage.className = 'editor-message success';
-    drawEditorMaze();
-}
-
-async function loadMapsFromServer() {
-    mapsList.innerHTML = '<div class="maps-loading">Загрузка...</div>';
-    try {
-        const res = await fetch('/api/maps');
-        if (!res.ok) {
-            mapsList.innerHTML = '<div class="maps-empty">Ошибка загрузки карт</div>';
-            return;
-        }
-        const maps = await res.json();
-        if (maps.length === 0) {
-            mapsList.innerHTML = '<div class="maps-empty">Нет сохранённых карт</div>';
-            return;
-        }
-        mapsList.innerHTML = maps.map(m => `
-            <div class="map-item">
-                <div class="map-item-name">${escapeHtml(m.name)}</div>
-                <div class="map-item-date">${new Date(m.createdAt).toLocaleString('ru')}</div>
-                <div class="map-item-actions">
-                    <button class="btn-tertiary" onclick="loadMapFromServer('${m.id}')">📂 Загр.</button>
-                    <button class="btn-tertiary" onclick="playMapFromServer('${m.id}')">▶ Играть</button>
-                    <button class="btn-tertiary" onclick="deleteMapFromServer('${m.id}')">🗑 Удал.</button>
-                </div>
-            </div>
-        `).join('');
-    } catch (err) {
-        mapsList.innerHTML = '<div class="maps-empty">Ошибка загрузки карт</div>';
-    }
-}
-
-async function loadMapFromServer(id) {
-    try {
-        const res = await fetch(`/api/maps/${id}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        editorState.maze = data.maze.map(row => [...row]);
-        editorState.startX = data.startX;
-        editorState.startY = data.startY;
-        editorState.finishX = data.finishX;
-        editorState.finishY = data.finishY;
-        editorState.traps = new Set(data.traps);
-        editorState.coins = new Set(data.coins);
-        mapNameInput.value = data.name;
-        drawEditorMaze();
-        editorMessage.textContent = `✅ Карта "${escapeHtml(data.name)}" загружена!`;
-        editorMessage.className = 'editor-message success';
-    } catch (err) {
-        editorMessage.textContent = '❌ Ошибка загрузки карты';
-        editorMessage.className = 'editor-message error';
-    }
-}
-
-async function playMapFromServer(id) {
-    try {
-        const res = await fetch(`/api/maps/${id}`);
-        if (!res.ok) return;
-        const data = await res.json();
-        localStorage.setItem('customLevel', JSON.stringify(data));
-        gameState.isCustomLevel = true;
-        closeLevelEditor();
-        codeEditor.value = '';
-        initGame();
-    } catch (err) {
-        editorMessage.textContent = '❌ Ошибка запуска карты';
-        editorMessage.className = 'editor-message error';
-    }
-}
-
-async function deleteMapFromServer(id) {
-    try {
-        await fetch(`/api/maps/${id}`, { method: 'DELETE' });
-        loadMapsFromServer();
-    } catch (err) {
-        editorMessage.textContent = '❌ Ошибка удаления карты';
-        editorMessage.className = 'editor-message error';
-    }
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
-
-async function playCustomLevel() {
-    if (!await saveCustomLevel()) return;
-    gameState.isCustomLevel = true;
+// Starts a map from the level editor or the server
+function startCustomLevel(data) {
+    const level = normalizeMap(data);
+    localStorage.setItem('customLevel', JSON.stringify(level));
+    gameState.customLevel = level;
     closeLevelEditor();
-    codeEditor.value = '';
+    setEditorCode('');
     initGame();
+    addLog(`Загружена карта «${level.name || 'без названия'}» — прогресс кампании не меняется`, 'info');
+}
+
+// ---------- Character upload ----------
+
+function handleCharacterUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = event => {
+        const img = new Image();
+        img.onload = () => {
+            customCharacterImage = img;
+            localStorage.setItem('customCharacter', event.target.result);
+            requestRender();
+            showMessage('✓ Персонаж загружен!', 'success');
+            addLog('Персонаж успешно загружен', 'success');
+        };
+        img.onerror = () => {
+            showMessage('Ошибка загрузки изображения', 'error');
+            addLog('Не удалось загрузить изображение', 'error');
+        };
+        img.src = event.target.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
 }
 
 // Event listeners setup
 function setupEventListeners() {
-    runButton.addEventListener('click', executeCode);
-    resetButton.addEventListener('click', () => {
-        gameState.playerX = gameState.startX;
-        gameState.playerY = gameState.startY;
-        gameState.steps = 0;
-        gameState.timer = 0;
-        gameState.isRunning = false;
-        if (gameState.timerInterval) stopTimer();
-        runButton.disabled = false;
-        clearMessage();
-        gameState.currentCommandIndex = -1;
-        updateLineNumbers(-1);
-        updateUI();
-        draw();
-        addLog('Персонаж сброшен на стартовую позицию', 'info');
+    dom.runButton.addEventListener('click', executeCode);
+    dom.resetButton.addEventListener('click', resetLevel);
+    dom.demoButton.addEventListener('click', runDemo);
+    dom.nextLevelButton.addEventListener('click', nextLevel);
+    dom.restartButton.addEventListener('click', restartLevel);
+    dom.hintButton.addEventListener('click', generateHint);
+    dom.helpButton.addEventListener('click', showTutorial);
+    dom.startGameButton.addEventListener('click', hideTutorial);
+    dom.copyButton.addEventListener('click', copyCode);
+    dom.clearLogsButton.addEventListener('click', clearLogs);
+    dom.themeButton.addEventListener('click', toggleTheme);
+
+    dom.playerButton.addEventListener('click', openPlayerModal);
+    dom.playerStartBtn.addEventListener('click', submitPlayerName);
+    dom.playerNameInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') submitPlayerName();
+    });
+    dom.introCloseBtn.addEventListener('click', () => dom.introModal.classList.add('hidden'));
+    dom.finishRestartBtn.addEventListener('click', restartCampaign);
+    dom.finishSwitchBtn.addEventListener('click', () => {
+        dom.finishModal.classList.add('hidden');
+        openPlayerModal();
     });
 
-    // Keyboard shortcut for stopping execution (Escape key)
-    document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && gameState.isRunning) {
-            stopExecution();
+    dom.settingsButton.addEventListener('click', openSettings);
+    dom.settingsCancelBtn.addEventListener('click', closeSettings);
+    dom.settingsSaveBtn.addEventListener('click', saveSettings);
+    dom.settingSpeed.addEventListener('input', () => {
+        dom.settingSpeedValue.textContent = `${dom.settingSpeed.value} мс`;
+    });
+
+    dom.codeEditor.addEventListener('keydown', handleEditorKeys);
+    dom.codeEditor.addEventListener('input', () => {
+        if (lineHighlight.kind === 'error') clearLineHighlight();
+        updateLineNumbers();
+        updateLineCount();
+    });
+    dom.codeEditor.addEventListener('scroll', syncEditorScroll);
+
+    const blockingModals = [dom.playerModal, dom.introModal, dom.finishModal, dom.victoryModal];
+    document.addEventListener('keydown', e => {
+        if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+            e.preventDefault();
+            if (blockingModals.every(isHidden)) executeCode();
+            return;
         }
+        if (e.key !== 'Escape') return;
+        if (!isHidden(dom.editorModal)) closeLevelEditor();
+        else if (!isHidden(dom.settingsModal)) closeSettings();
+        else if (!isHidden(dom.introModal)) dom.introModal.classList.add('hidden');
+        else if (!isHidden(dom.tutorialModal)) hideTutorial();
+        else if (!isHidden(dom.playerModal) && gameState.player) dom.playerModal.classList.add('hidden');
+        else if (gameState.isRunning) stopExecution();
     });
-    document.getElementById('nextLevelButton').addEventListener('click', nextLevel);
-    document.getElementById('restartButton').addEventListener('click', restartLevel);
-
-    codeEditor.addEventListener('input', () => {
-        const totalLines = codeEditor.value.split('\n').length;
-        const codeLines = codeEditor.value.split('\n').filter(l => l.trim()).length;
-        lineCountDisplay.textContent = codeLines;
-        updateLineNumbers(-1);
-    });
-
-    codeEditor.addEventListener('scroll', () => {
-        lineNumbers.scrollTop = codeEditor.scrollTop;
-    });
-
-    hintButton.addEventListener('click', () => {
-        if (!tutorialModal.classList.contains('hidden')) {
-            // Туториал открыт - закрываем его и добавляем подсказку пути
-            hideTutorial();
-            generateHint();
-        } else {
-            // Туториал закрыт - открываем его
-            showTutorial();
-        }
-    });
-    copyButton.addEventListener('click', copyCode);
-    document.getElementById('startGameButton').addEventListener('click', hideTutorial);
 
     // Character upload
-    uploadCharacterButton.addEventListener('click', () => {
-        characterInput.click();
-    });
-
-    characterInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const img = new Image();
-            img.onload = () => {
-                customCharacterImage = img;
-                localStorage.setItem('customCharacter', event.target.result);
-                draw();
-                showMessage('✓ Персонаж загружен!', 'success');
-                addLog('Персонаж успешно загружен', 'success');
-            };
-            img.onerror = () => {
-                showMessage('Ошибка загрузки изображения', 'error');
-                addLog('Error: Не удалось загрузить изображение', 'error');
-            };
-            img.src = event.target.result;
-        };
-        reader.readAsDataURL(file);
-    });
-
-    // Level Editor
-    editorButton.addEventListener('click', openLevelEditor);
-    editorCloseBtn.addEventListener('click', closeLevelEditor);
-    editorPlayBtn.addEventListener('click', playCustomLevel);
-    editorSaveBtn.addEventListener('click', saveCustomLevel);
-    editorClearBtn.addEventListener('click', clearEditorMaze);
-
-    document.querySelectorAll('.tool-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            editorState.currentTool = btn.dataset.tool;
-        });
-    });
+    dom.uploadCharacterButton.addEventListener('click', () => dom.characterInput.click());
+    dom.characterInput.addEventListener('change', handleCharacterUpload);
 }
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', () => {
     initDOM();
+    initEditorDOM();
+    loadSettings();
     initTheme();
     initGame();
-    updateLineNumbers(-1);
+    updateLineNumbers();
     setupEventListeners();
+    setupEditorListeners();
 
-    // Всегда показываем туториал при входе
-    showTutorial();
+    // Continue as the last player, or ask for a name first
+    const lastPlayer = localStorage.getItem(CURRENT_PLAYER_KEY);
+    if (lastPlayer && readPlayers()[lastPlayer]) selectPlayer(lastPlayer);
+    else openPlayerModal();
 });
