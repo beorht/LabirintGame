@@ -859,11 +859,33 @@ function calcStars(lines) {
     return stars;
 }
 
+function sendResult(stars) {
+    if (gameState.customLevel || !gameState.player) return;
+    const body = {
+        player: gameState.player.name,
+        level: gameState.level,
+        stars,
+        steps: gameState.steps,
+        optimalSteps: gameState.optimalSteps,
+        coins: gameState.coins,
+        totalCoins: gameState.initialCoins.length,
+        timeSec: gameState.timer
+    };
+    fetch('/api/results', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    }).then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    }).catch(() => addLog('Результат не отправлен на сервер', 'error'));
+}
+
 function winLevel() {
     stopTimer();
     const lines = countCodeLines(dom.codeEditor.value);
     const stars = calcStars(lines);
     recordVictory(stars);
+    sendResult(stars);
     spawnParticles(gameState.finishX, gameState.finishY, CONFETTI_COLORS, 90, {
         speed: boardView.cellSize * 6.4, gravity: 420, life: 1500
     });

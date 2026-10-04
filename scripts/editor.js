@@ -306,7 +306,7 @@ function playCustomLevel() {
 }
 
 function setupEditorListeners() {
-    dom.editorButton.addEventListener('click', openLevelEditor);
+    if (dom.editorButton) dom.editorButton.addEventListener('click', openLevelEditor);
     dom.editorCloseBtn.addEventListener('click', closeLevelEditor);
     dom.editorPlayBtn.addEventListener('click', playCustomLevel);
     dom.editorSaveBtn.addEventListener('click', saveCustomLevel);

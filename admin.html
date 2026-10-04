@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Maze Quest — админ-панель</title>
+    <style>
+        :root {
+            --bg: #f5f6f8; --card: #ffffff; --text: #1d2330; --muted: #6b7280;
+            --border: #e2e5ea; --accent: #2f6fed; --row-hover: #f0f4ff;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                --bg: #14171f; --card: #1d222d; --text: #e6e9ef; --muted: #8b93a3;
+                --border: #2c3341; --accent: #5b8cff; --row-hover: #232a38;
+            }
+        }
+        :root[data-theme="dark"] {
+            --bg: #14171f; --card: #1d222d; --text: #e6e9ef; --muted: #8b93a3;
+            --border: #2c3341; --accent: #5b8cff; --row-hover: #232a38;
+        }
+        body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, sans-serif; }
+        main { max-width: 1100px; margin: 0 auto; padding: 24px 16px; }
+        header { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+        h1 { font-size: 22px; margin: 0; }
+        button { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 8px 14px; cursor: pointer; font: inherit; }
+        .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+        .card-label { color: var(--muted); font-size: 12px; }
+        .card-value { font-size: 20px; font-weight: 600; }
+        .table-wrap { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap; }
+        th { color: var(--muted); font-weight: 500; font-size: 12px; }
+        tr.player-row { cursor: pointer; }
+        tr.player-row:hover { background: var(--row-hover); }
+        tr.detail td { background: var(--bg); white-space: normal; }
+        .detail table th, .detail table td { padding: 6px 10px; }
+        .stars { color: #e0a800; letter-spacing: 1px; }
+        .muted { color: var(--muted); }
+        .empty, .error { padding: 24px; text-align: center; color: var(--muted); }
+        .error { color: #d93025; }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <h1>🛡️ Maze Quest — игроки</h1>
+        <button id="refreshBtn" type="button">↻ Обновить</button>
+    </header>
+
+    <section class="cards">
+        <div class="card"><div class="card-label">Игроков</div><div class="card-value" id="statPlayers">—</div></div>
+        <div class="card"><div class="card-label">Прохождений уровней</div><div class="card-value" id="statRuns">—</div></div>
+        <div class="card"><div class="card-label">Кампаний пройдено</div><div class="card-value" id="statFinished">—</div></div>
+    </section>
+
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Игрок</th>
+                <th>Уровней пройдено</th>
+                <th>Шаги (лучшие)</th>
+                <th>Монеты</th>
+                <th>Время</th>
+                <th>★ всего</th>
+                <th>Попыток</th>
+                <th>Последняя игра</th>
+            </tr>
+            </thead>
+            <tbody id="playersBody"></tbody>
+        </table>
+        <div class="empty" id="status">Загрузка…</div>
+    </div>
+</main>
+
+<script>
+    const CAMPAIGN_LEVELS = 14;
+    const playersBody = document.getElementById('playersBody');
+    const statusEl = document.getElementById('status');
+
+    function esc(value) {
+        return String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+    }
+
+    function formatTime(sec) {
+        const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+        const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0');
+        return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+    }
+
+    function formatDate(iso) {
+        return new Date(iso).toLocaleString('ru-RU', { dateStyle: 'short', timeStyle: 'short' });
+    }
+
+    function stars(n) {
+        return `<span class="stars">${'★'.repeat(n)}<span class="muted">${'★'.repeat(3 - n)}</span></span>`;
+    }
+
+    // Best attempt per level: more stars first, then fewer steps
+    function better(a, b) {
+        if (a.stars !== b.stars) return a.stars > b.stars ? a : b;
+        return a.steps <= b.steps ? a : b;
+    }
+
+    function groupByPlayer(results) {
+        const players = new Map();
+        for (const r of results) {
+            if (!players.has(r.player)) players.set(r.player, { name: r.player, levels: new Map(), attempts: 0, lastAt: r.createdAt });
+            const p = players.get(r.player);
+            p.attempts++;
+            if (new Date(r.createdAt) > new Date(p.lastAt)) p.lastAt = r.createdAt;
+            const best = p.levels.get(r.level);
+            p.levels.set(r.level, best ? better(best, r) : r);
+        }
+        for (const p of players.values()) {
+            const bests = [...p.levels.values()];
+            p.levelsDone = bests.length;
+            p.totalSteps = bests.reduce((s, r) => s + r.steps, 0);
+            p.totalCoins = bests.reduce((s, r) => s + r.coins, 0);
+            p.totalCoinsMax = bests.reduce((s, r) => s + r.totalCoins, 0);
+            p.totalTime = bests.reduce((s, r) => s + r.timeSec, 0);
+            p.totalStars = bests.reduce((s, r) => s + r.stars, 0);
+        }
+        return [...players.values()].sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+    }
+
+    function detailHtml(player) {
+        const rows = [...player.levels.entries()].sort((a, b) => a[0] - b[0]).map(([level, r]) => `
+            <tr>
+                <td>${level}</td>
+                <td>${r.steps} <span class="muted">(оптимум ${r.optimalSteps})</span></td>
+                <td>${r.coins} / ${r.totalCoins}</td>
+                <td>${formatTime(r.timeSec)}</td>
+                <td>${stars(r.stars)}</td>
+                <td>${formatDate(r.createdAt)}</td>
+            </tr>`).join('');
+        return `<table>
+            <thead><tr><th>Уровень</th><th>Шаги</th><th>Монеты</th><th>Время</th><th>Звёзды</th><th>Лучший результат</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan="6" class="muted">Нет данных</td></tr>'}</tbody>
+        </table>`;
+    }
+
+    function render(results) {
+        const players = groupByPlayer(results);
+        document.getElementById('statPlayers').textContent = players.length;
+        document.getElementById('statRuns').textContent = results.length;
+        document.getElementById('statFinished').textContent = players.filter(p => p.levelsDone >= CAMPAIGN_LEVELS).length;
+
+        if (players.length === 0) {
+            playersBody.innerHTML = '';
+            statusEl.textContent = 'Пока никто не проходил уровни';
+            statusEl.style.display = '';
+            return;
+        }
+        statusEl.style.display = 'none';
+        playersBody.innerHTML = players.map((p, i) => `
+            <tr class="player-row" data-index="${i}">
+                <td><strong>${esc(p.name)}</strong></td>
+                <td>${p.levelsDone} / ${CAMPAIGN_LEVELS}</td>
+                <td>${p.totalSteps}</td>
+                <td>${p.totalCoins} / ${p.totalCoinsMax}</td>
+                <td>${formatTime(p.totalTime)}</td>
+                <td>${p.totalStars}</td>
+                <td>${p.attempts}</td>
+                <td class="muted">${formatDate(p.lastAt)}</td>
+            </tr>
+            <tr class="detail" data-detail="${i}" hidden>
+                <td colspan="8">${detailHtml(p)}</td>
+            </tr>`).join('');
+
+        playersBody.querySelectorAll('tr.player-row').forEach(row => {
+            row.addEventListener('click', () => {
+                const detail = playersBody.querySelector(`tr[data-detail="${row.dataset.index}"]`);
+                detail.hidden = !detail.hidden;
+            });
+        });
+    }
+
+    async function load() {
+        statusEl.textContent = 'Загрузка…';
+        statusEl.style.display = '';
+        try {
+            const res = await fetch('/api/admin/results', { cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            render(await res.json());
+        } catch (err) {
+            playersBody.innerHTML = '';
+            statusEl.className = 'error';
+            statusEl.textContent = `Не удалось загрузить данные (${err.message})`;
+        }
+    }
+
+    document.getElementById('refreshBtn').addEventListener('click', load);
+    load();
+</script>
+</body>
+</html>
