@@ -5,6 +5,11 @@ const BOARD_MAX_PX = 700;
 const MOVE_ANIMATION_MS = 180;
 const SHAKE_MS = 320;
 const HINT_LENGTH = 5;
+const HINT_LIMIT = 3;           // max hints per level attempt
+const ROBOT_BLINK_EVERY_MS = 3400;
+const ROBOT_BLINK_MS = 140;
+const ROBOT_CHEER_MS = 1200;    // victory hops, then the cheer pose holds still
+const IDLE_FRAME_MS = 50;       // idle breathing/blinking repaints at ~20 fps, not every vsync
 const MAX_LOG_ENTRIES = 200;
 const DEMO_MAX_WALK_MS = 20000;         // long solver walks are sped up to fit this
 const MAX_NAME_LENGTH = 20;
@@ -59,6 +64,7 @@ const gameState = {
     initialCoins: [],
     visited: new Set(),         // hero trail
     optimalSteps: 0,
+    hintsUsed: 0,
     isRunning: false,
     runId: 0,                   // invalidates a stopped run still waiting on its delay
     timer: 0,
@@ -74,15 +80,21 @@ const fx = {
     moveStart: 0,
     moveDuration: MOVE_ANIMATION_MS,
     facing: 'right',
+    faceLeft: false,            // robot sprite is mirrored after a move to the left
+    walkPhase: 0,               // moves made this run; alternates the two stride frames
+    cheerStart: null,           // set on victory
     shakeStart: -Infinity,
     particles: [],
+    rings: [],
     explored: { cells: [], count: 0 },
-    frameId: null
+    frameId: null,
+    idleTimer: null
 };
 
 const dom = {};
 let boardView;
 let customCharacterImage = null;
+let robotSprite = null;
 let lineHighlight = { index: -1, kind: '', loops: [] };
 let editorMetrics = { lineHeight: 24, padTop: 12 };
 
@@ -130,6 +142,14 @@ function initDOM() {
         };
         img.src = savedCharacter;
     }
+
+    // Without the atlas (e.g. file missing) the hero falls back to the drawn circle
+    const robot = new Image();
+    robot.onload = () => {
+        robotSprite = robot;
+        requestRender();
+    };
+    robot.src = ROBOT_SPRITE.src;
 }
 
 // ---------- Theme ----------
@@ -336,6 +356,8 @@ function initGame() {
     resizeBoardView(boardView, gameState.maze.length);
     buildBoardLayer(boardView, gameState);
     resetHero();
+    gameState.hintsUsed = 0;
+    updateHintButton();
     updateLevelBanner();
     updateLineCount();
     clearMessage();
@@ -354,7 +376,11 @@ function resetHero() {
     gameState.visited = new Set([cellKey(gameState.startX, gameState.startY)]);
     fx.moveFrom = null;
     fx.facing = 'right';
+    fx.faceLeft = false;
+    fx.walkPhase = 0;
+    fx.cheerStart = null;
     fx.particles = [];
+    fx.rings = [];
     fx.explored = { cells: [], count: 0 };
     updateUI();
     requestRender();
@@ -378,11 +404,35 @@ function updateLevelBanner() {
 
 const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
 
-// Draws one frame; returns true while an animation still needs more frames
+// Picks the robot frame for this moment. `animating` is true when the pose itself needs
+// smooth frames, 'idle' when slow repaints are enough (breathing, blinking)
+function robotPose(now, moveT, shaking) {
+    if (fx.cheerStart !== null) {
+        const age = now - fx.cheerStart;
+        const hopping = !reducedMotion.matches && age < ROBOT_CHEER_MS;
+        const lift = hopping ? Math.abs(Math.sin((age / ROBOT_CHEER_MS) * Math.PI * 3)) * 0.14 : 0;
+        return { frame: 'cheer', lift, animating: hopping };
+    }
+    if (shaking) return { frame: 'blink', lift: 0, animating: false };
+
+    const walking = moveT !== null || (gameState.isRunning && fx.walkPhase > 0);
+    if (walking) {
+        const lift = moveT !== null ? Math.sin(moveT * Math.PI) * 0.08 : 0;
+        return { frame: fx.walkPhase % 2 ? 'walkA' : 'walkB', lift, animating: false };
+    }
+
+    if (reducedMotion.matches) return { frame: 'idle', lift: 0, animating: false };
+    const blinking = now % ROBOT_BLINK_EVERY_MS < ROBOT_BLINK_MS;
+    return { frame: blinking ? 'blink' : 'idle', lift: (Math.sin(now / 520) + 1) * 0.012, animating: 'idle' };
+}
+
+// Draws one frame; returns true while an animation needs more frames,
+// 'idle' when only the idle robot is moving, false when the picture is still
 function draw(now = performance.now()) {
     if (!boardView.layer) return false;
     const { ctx, cellSize: cs, size } = boardView;
     let animating = false;
+    let idle = false;
 
     ctx.clearRect(0, 0, size, size);
     ctx.save();
@@ -400,15 +450,32 @@ function draw(now = performance.now()) {
 
     let heroX = gameState.playerX;
     let heroY = gameState.playerY;
+    let moveT = null;
     if (fx.moveFrom) {
         const t = Math.min(1, Math.max(0, (now - fx.moveStart) / fx.moveDuration));
         const e = easeOutCubic(t);
         heroX = fx.moveFrom.x + (heroX - fx.moveFrom.x) * e;
         heroY = fx.moveFrom.y + (heroY - fx.moveFrom.y) * e;
-        if (t < 1) animating = true;
-        else fx.moveFrom = null;
+        if (t < 1) {
+            animating = true;
+            moveT = t;
+        } else fx.moveFrom = null;
     }
-    drawHero(ctx, heroX * cs + cs / 2, heroY * cs + cs / 2, cs, fx.facing, customCharacterImage);
+    const heroCx = heroX * cs + cs / 2;
+    const heroCy = heroY * cs + cs / 2;
+    if (robotSprite && !customCharacterImage) {
+        const pose = robotPose(now, moveT, shake < 1);
+        drawRobot(ctx, heroCx, heroCy, cs, robotSprite, pose.frame, fx.faceLeft, pose.lift * cs);
+        if (pose.animating === true) animating = true;
+        else if (pose.animating === 'idle') idle = true;
+    } else {
+        drawHero(ctx, heroCx, heroCy, cs, fx.facing, customCharacterImage);
+    }
+
+    if (fx.rings.length) {
+        fx.rings = drawRings(ctx, fx.rings, now);
+        if (fx.rings.length) animating = true;
+    }
 
     if (fx.particles.length) {
         fx.particles = drawParticles(ctx, fx.particles, now);
@@ -416,7 +483,7 @@ function draw(now = performance.now()) {
     }
 
     ctx.restore();
-    return animating;
+    return animating || (idle ? 'idle' : false);
 }
 
 // Render on demand: frames are only requested while something changes
@@ -428,7 +495,17 @@ function requestRender() {
 // precede the moveStart/born times recorded by game logic, which would extrapolate backwards
 function renderFrame() {
     fx.frameId = null;
-    if (draw(performance.now())) requestRender();
+    const state = draw(performance.now());
+    if (state === true) requestRender();
+    else if (state === 'idle') scheduleIdleFrame();
+}
+
+function scheduleIdleFrame() {
+    if (fx.idleTimer !== null) return;
+    fx.idleTimer = setTimeout(() => {
+        fx.idleTimer = null;
+        requestRender();
+    }, IDLE_FRAME_MS);
 }
 
 function spawnParticles(cellX, cellY, colors, count, options) {
@@ -438,6 +515,13 @@ function spawnParticles(cellX, cellY, colors, count, options) {
         speed: cs * 2.8,
         ...options
     }));
+    requestRender();
+}
+
+function spawnRing(cellX, cellY, color, options) {
+    if (reducedMotion.matches) return;
+    const cs = boardView.cellSize;
+    fx.rings.push(createRing((cellX + 0.5) * cs, (cellY + 0.5) * cs, color, { maxRadius: cs * 1.3, ...options }));
     requestRender();
 }
 
@@ -682,9 +766,20 @@ function setRunning(running) {
     dom.runButton.textContent = running ? '■ Стоп' : '▶ Выполнить';
     dom.runButton.classList.toggle('is-running', running);
     dom.codeEditor.readOnly = running;
-    dom.hintButton.disabled = running;
+    updateHintButton();
+    requestRender();            // the robot switches between its walking and idle poses
     dom.demoButton.disabled = running;
     dom.solverSelect.disabled = running;
+}
+
+// Reflects remaining hints on the button; call after isRunning or hintsUsed changes
+function updateHintButton() {
+    const left = HINT_LIMIT - gameState.hintsUsed;
+    dom.hintButton.disabled = gameState.isRunning || left <= 0;
+    dom.hintButton.textContent = `💡 Подсказка (${Math.max(left, 0)}/${HINT_LIMIT})`;
+    dom.hintButton.title = left > 0
+        ? 'Добавить следующие шаги к коду'
+        : 'Подсказки на этом уровне закончились';
 }
 
 const isCurrentRun = runId => runId === gameState.runId && gameState.isRunning;
@@ -777,6 +872,7 @@ function movePlayer(dx, dy) {
     const newX = gameState.playerX + dx;
     const newY = gameState.playerY + dy;
     fx.facing = Object.keys(MOVES).find(dir => MOVES[dir][0] === dx && MOVES[dir][1] === dy);
+    if (dx) fx.faceLeft = dx < 0;
 
     const error = getMoveError(newX, newY);
     if (error) {
@@ -792,6 +888,7 @@ function movePlayer(dx, dy) {
     gameState.playerX = newX;
     gameState.playerY = newY;
     gameState.steps++;
+    fx.walkPhase++;
 
     const key = cellKey(newX, newY);
     gameState.visited.add(key);
@@ -807,11 +904,14 @@ function movePlayer(dx, dy) {
         gameState.coins++;
         gameState.coinCells.delete(key);
         showMessage('💰 Монета собрана!', 'success');
-        spawnParticles(newX, newY, [palette.coin, palette.coinLight], 16);
+        spawnParticles(newX, newY, [palette.coin, palette.coinLight], 14, {
+            shape: 'spark', gravity: 60, life: 550, spin: 4
+        });
     }
 
     if (isOnFinish()) {
         showMessage('🚩 Вы достигли финиша!', 'success');
+        spawnRing(newX, newY, palette.finish);
     }
 
     updateUI();
@@ -886,6 +986,8 @@ function winLevel() {
     const stars = calcStars(lines);
     recordVictory(stars);
     sendResult(stars);
+    fx.cheerStart = performance.now();
+    requestRender();
     spawnParticles(gameState.finishX, gameState.finishY, CONFETTI_COLORS, 90, {
         speed: boardView.cellSize * 6.4, gravity: 420, life: 1500
     });
@@ -996,6 +1098,10 @@ function pathToCommands(directions, limit = null) {
 
 function generateHint() {
     if (gameState.isRunning) return;
+    if (gameState.hintsUsed >= HINT_LIMIT) {
+        showMessage('Подсказки на этом уровне закончились', 'error');
+        return;
+    }
 
     const { steps, error } = compileCurrentCode();
     if (error) {
@@ -1024,9 +1130,12 @@ function generateHint() {
     const commands = pathToCommands(path, HINT_LENGTH);
     if (path.length <= HINT_LENGTH) commands.push('hero.finish();');
     insertCodeIntoEditor(commands.join('\n'));
+    gameState.hintsUsed++;
+    updateHintButton();
+    const left = HINT_LIMIT - gameState.hintsUsed;
     const tip = gameState.levelInfo.allowRepeat ? ' Повторы можно свернуть в repeat.' : '';
-    showMessage(`💡 Подсказка добавлена в конец кода.${tip}`, 'info');
-    addLog(`Подсказка добавлена (${commands.length} команд)`, 'info');
+    showMessage(`💡 Подсказка добавлена в конец кода (осталось ${left}/${HINT_LIMIT}).${tip}`, 'info');
+    addLog(`Подсказка добавлена (${commands.length} команд, осталось ${left}/${HINT_LIMIT})`, 'info');
 }
 
 function insertCodeIntoEditor(code) {

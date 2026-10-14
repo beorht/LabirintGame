@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Maze Quest - Образовательная платформа программирования</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧭</text></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Rubik:wght@400;500;600;700&family=Unbounded:wght@600;700&display=swap">
     <link rel="stylesheet" href="styles/game.css">
 </head>
 <body>
@@ -12,7 +15,7 @@
         <!-- Header / HUD -->
         <header class="hud">
             <div class="brand">
-                <span class="brand-logo">🧭</span>
+                <span class="brand-logo" aria-hidden="true"></span>
                 <span class="brand-name">Maze Quest</span>
             </div>
             <div class="hud-stats">
@@ -158,7 +161,8 @@
     <!-- Player Modal -->
     <div class="overlay hidden" id="playerModal">
         <div class="modal-card player-content">
-            <div class="modal-title">🧭 Maze Quest</div>
+            <span class="mascot" aria-hidden="true"></span>
+            <div class="modal-title">Maze Quest</div>
             <p class="player-text">Как вас зовут? Прогресс сохранится под этим именем.</p>
             <input type="text" id="playerNameInput" class="text-input player-input" list="playerNameList"
                    maxlength="20" placeholder="Ваше имя" autocomplete="off">
@@ -197,7 +201,7 @@
     <!-- Tutorial Modal -->
     <div class="overlay hidden" id="tutorialModal">
         <div class="modal-card tutorial-content">
-            <div class="tutorial-title">🧭 Maze Quest</div>
+            <div class="tutorial-title">Maze Quest</div>
 
             <div class="tutorial-section">
                 <div class="tutorial-section-title">Как играть</div>
@@ -209,8 +213,7 @@
 
             <div class="tutorial-section">
                 <div class="tutorial-section-title">Команды</div>
-                <div class="tutorial-code">
-<span class="tk-obj">hero</span>.<span class="tk-fn">down</span>()   <span class="tk-cm">// шаг вниз</span>
+                <div class="tutorial-code"><span class="tk-obj">hero</span>.<span class="tk-fn">down</span>()   <span class="tk-cm">// шаг вниз</span>
 <span class="tk-obj">hero</span>.<span class="tk-fn">up</span>()     <span class="tk-cm">// шаг вверх</span>
 <span class="tk-obj">hero</span>.<span class="tk-fn">left</span>()   <span class="tk-cm">// шаг влево</span>
 <span class="tk-obj">hero</span>.<span class="tk-fn">right</span>()  <span class="tk-cm">// шаг вправо</span>

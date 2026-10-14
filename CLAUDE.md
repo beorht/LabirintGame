@@ -73,6 +73,10 @@ curl -X POST http://localhost:3000/api/maps -d '{"name":"Test","maze":[[...]]}' 
 │   ├── game.js             # UI: game state, code execution, demo mode, settings, HUD, logs
 │   └── editor.js           # UI: level editor + saved-maps list (backend API)
 ├── tests/                  # node --test suites; levels.test.js holds 3-star reference solutions
+├── assets/
+│   ├── Cute Robot Sprite Sheet.png  # Source art (no alpha, irregular layout) — not served
+│   └── robot/robot.png     # Built atlas: 5 cells 256×192 (idle, blink, walkA, walkB, cheer)
+├── tools/build_robot_sprites.py  # Rebuilds robot.png from the source sheet (Python + Pillow)
 ├── server.js               # Optional Express backend for map persistence
 ├── maps/                   # Saved custom maps (JSON)
 └── docs/tz.md              # Full specification document
@@ -97,6 +101,8 @@ Layering follows `ARCHITECTURE.md` (config → domain → view → UI):
 - `normalizeMap()` makes legacy maps (15-row, `[x, y]` items) usable.
 
 **View (`render.js`)** — `createBoardView(canvas, maxPx)` + `resizeBoardView(view, gridSize)` compute the cell size to fit; `buildBoardLayer()` pre-renders the static board offscreen. Colors come from `palette` (refreshed on theme change by `refreshPalette()`; don't call `getColor()` in draw loops).
+
+**Hero sprite** — `drawRobot()` draws a frame of `ROBOT_SPRITE` (`render.js`; layout must match `tools/build_robot_sprites.py`). `robotPose()` in `game.js` picks it: `cheer` after a win (`fx.cheerStart`), `blink` while the board shakes, `walkA`/`walkB` alternating by `fx.walkPhase` while moving or running, else `idle` with breathing and a blink every 3.4 s. Sprites face right; `fx.faceLeft` mirrors them. An uploaded custom PNG takes priority; if the atlas fails to load, the old drawn hero is used. The idle robot is the only continuous animation: `draw()` returns `'idle'` and `renderFrame()` repaints via `scheduleIdleFrame()` at ~20 fps instead of every vsync; with `prefers-reduced-motion` it stays still.
 
 **UI (`game.js`, `editor.js`)** — `gameState` holds the current level and run state; `fx` holds visual-only state. `draw()` composites layer + explored overlay + trail + items + hero + particles; frames are requested on demand via `requestRender()` only while something animates.
 

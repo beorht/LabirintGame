@@ -18,6 +18,7 @@ app.use(express.json({ limit: '100kb' }));
 app.get(['/', '/index.html'], (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
 app.use('/styles', express.static(path.join(__dirname, 'styles')));
 app.use('/scripts', express.static(path.join(__dirname, 'scripts')));
+app.use('/assets/robot', express.static(path.join(__dirname, 'assets', 'robot')));
 
 function requireAdmin(req, res, next) {
     if (!ADMIN_PASSWORD) return res.status(503).send('Админ-панель отключена: задайте переменную ADMIN_PASSWORD');

@@ -1,6 +1,6 @@
 // View layer: canvas drawing. Knows nothing about game rules — callers pass in what to draw.
 
-const CONFETTI_COLORS = ['#286AFF', '#1D9E75', '#f0ad00', '#e5484d', '#8d85f2'];
+const CONFETTI_COLORS = ['#ff8a1f', '#72e4ff', '#f5b301', '#e5484d', '#2b6fd6', '#fdf6ee'];
 
 let palette = {};
 
@@ -221,6 +221,37 @@ function drawHero(c, cx, cy, cs, facing, image) {
     }
 }
 
+// Layout of assets/robot/robot.png, produced by tools/build_robot_sprites.py
+const ROBOT_SPRITE = {
+    src: 'assets/robot/robot.png',
+    cellW: 256,
+    cellH: 192,
+    footY: 188,                 // row the feet rest on in every cell
+    frames: { idle: 0, blink: 1, walkA: 2, walkB: 3, cheer: 4 }
+};
+
+// Draws one robot frame with its feet on the lower part of the cell; lift raises it (hops)
+function drawRobot(c, cx, cy, cs, sprite, frame, flip, lift = 0) {
+    const footY = cy + cs * 0.38;
+    c.fillStyle = 'rgba(0, 0, 0, 0.18)';
+    c.beginPath();
+    c.ellipse(cx, footY - cs * 0.02, cs * 0.26 * (1 - lift / cs), cs * 0.07, 0, 0, Math.PI * 2);
+    c.fill();
+
+    const k = (cs * 1.15) / ROBOT_SPRITE.cellH;
+    const dw = ROBOT_SPRITE.cellW * k;
+    const dh = ROBOT_SPRITE.cellH * k;
+    const dy = footY - lift - ROBOT_SPRITE.footY * k;
+    const sx = ROBOT_SPRITE.frames[frame] * ROBOT_SPRITE.cellW;
+
+    c.save();
+    c.imageSmoothingQuality = 'high';
+    c.translate(cx, 0);
+    if (flip) c.scale(-1, 1);
+    c.drawImage(sprite, sx, 0, ROBOT_SPRITE.cellW, ROBOT_SPRITE.cellH, -dw / 2, dy, dw, dh);
+    c.restore();
+}
+
 // Pre-renders the static board into an offscreen canvas of the view's size
 function buildBoardLayer(view, board) {
     const dpr = window.devicePixelRatio || 1;
@@ -235,7 +266,7 @@ function buildBoardLayer(view, board) {
 // ---------- Particles ----------
 
 // Positions are computed analytically from age, so no per-frame state is needed
-function createParticles(cx, cy, colors, count, { speed = 140, gravity = 380, life = 650 } = {}) {
+function createParticles(cx, cy, colors, count, { speed = 140, gravity = 380, life = 650, shape = 'square', spin = 0 } = {}) {
     const now = performance.now();
     return Array.from({ length: count }, (_, i) => {
         const angle = Math.random() * Math.PI * 2;
@@ -249,19 +280,60 @@ function createParticles(cx, cy, colors, count, { speed = 140, gravity = 380, li
             born: now,
             life: life * (0.7 + Math.random() * 0.6),
             size: 3 + Math.random() * 3,
-            color: colors[i % colors.length]
+            color: colors[i % colors.length],
+            shape,
+            spin: spin * (Math.random() < 0.5 ? -1 : 1)
         };
     });
+}
+
+// Four-point sparkle, used for coin pickups
+function drawSpark(c, x, y, size, rotation) {
+    c.save();
+    c.translate(x, y);
+    c.rotate(rotation);
+    c.beginPath();
+    c.moveTo(0, -size * 2);
+    c.quadraticCurveTo(size * 0.4, -size * 0.4, size * 2, 0);
+    c.quadraticCurveTo(size * 0.4, size * 0.4, 0, size * 2);
+    c.quadraticCurveTo(-size * 0.4, size * 0.4, -size * 2, 0);
+    c.quadraticCurveTo(-size * 0.4, -size * 0.4, 0, -size * 2);
+    c.closePath();
+    c.fill();
+    c.restore();
 }
 
 // Draws live particles and returns the ones still alive
 function drawParticles(c, particles, now) {
     const alive = particles.filter(p => now - p.born < p.life);
     for (const p of alive) {
-        const t = Math.max(0, now - p.born) / 1000;
-        c.globalAlpha = 1 - (now - p.born) / p.life;
+        const age = now - p.born;
+        const t = Math.max(0, age) / 1000;
+        const x = p.x + p.vx * t, y = p.y + p.vy * t + 0.5 * p.gravity * t * t;
+        c.globalAlpha = Math.max(0, 1 - age / p.life);
         c.fillStyle = p.color;
-        c.fillRect(p.x + p.vx * t - p.size / 2, p.y + p.vy * t + 0.5 * p.gravity * t * t - p.size / 2, p.size, p.size);
+        if (p.shape === 'spark') drawSpark(c, x, y, p.size, p.spin * t);
+        else c.fillRect(x - p.size / 2, y - p.size / 2, p.size, p.size);
+    }
+    c.globalAlpha = 1;
+    return alive;
+}
+
+// Expanding, fading ring — a short burst of feedback (e.g. arriving on the finish tile)
+function createRing(cx, cy, color, { maxRadius = 46, life = 480, lineWidth = 4 } = {}) {
+    return { x: cx, y: cy, color, maxRadius, life, lineWidth, born: performance.now() };
+}
+
+function drawRings(c, rings, now) {
+    const alive = rings.filter(r => now - r.born < r.life);
+    for (const r of alive) {
+        const t = (now - r.born) / r.life;
+        c.globalAlpha = 1 - t;
+        c.strokeStyle = r.color;
+        c.lineWidth = r.lineWidth * (1 - t * 0.6);
+        c.beginPath();
+        c.arc(r.x, r.y, r.maxRadius * t, 0, Math.PI * 2);
+        c.stroke();
     }
     c.globalAlpha = 1;
     return alive;
