@@ -10,54 +10,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Getting Started
 
-### Running the Game
+### Commands
 
-The project has two runtime options depending on your needs:
-
-**Option 1: Browser-only (no backend, no custom maps feature)**
-```bash
-cd /home/thinklinux/Projects/GamePlatfrom/v1
-
-# Python (recommended)
-python3 -m http.server 8000
-
-# Or Node.js
-npx http-server -p 8000
-
-# Open in browser
-# http://localhost:8000/index.html
-```
-
-**Option 2: With Express backend (enables map persistence)**
-```bash
-cd /home/thinklinux/Projects/GamePlatfrom/v1
-npm install
-npm start
-
-# Opens server on http://localhost:3000
-# Frontend: http://localhost:3000/index.html
-# API: http://localhost:3000/api/maps
-```
-
-The frontend runs entirely in the browser, but the optional Express backend enables saving and loading custom maps via REST API.
-
-### Common Development Commands
+No build step and no linter. Run everything from the repo root.
 
 ```bash
-# Run the game without backend (no map persistence)
-python3 -m http.server 8000
-# Then open http://localhost:8000/index.html
+npm test                              # node --test over tests/*.test.js
+node --test tests/levels.test.js      # a single suite
+node --test --test-name-pattern="^level 7:" tests/levels.test.js   # a single test by name
 
-# Run with Express backend (enables map API)
-npm install
-npm start
-# Then open http://localhost:3000/index.html
+ADMIN_PASSWORD=secret npm start       # Express on :3000 (PORT overrides); game at /index.html, admin at /admin (user "admin")
+python3 -m http.server 8000           # static only: campaign works; saved maps, results, admin don't
 
-# Test the Maps API
-curl http://localhost:3000/api/maps              # List all maps
-curl http://localhost:3000/api/maps/map_123      # Get specific map
-curl -X POST http://localhost:3000/api/maps -d '{"name":"Test","maze":[[...]]}' -H 'Content-Type: application/json'
+python3 tools/build_robot_sprites.py  # rebuild assets/robot/robot.png (needs Pillow)
 ```
+
+Without `ADMIN_PASSWORD` the server still runs but `/admin` and `/api/admin/*` return 503.
 
 ### File Structure
 
@@ -77,8 +45,10 @@ curl -X POST http://localhost:3000/api/maps -d '{"name":"Test","maze":[[...]]}' 
 │   ├── Cute Robot Sprite Sheet.png  # Source art (no alpha, irregular layout) — not served
 │   └── robot/robot.png     # Built atlas: 5 cells 256×192 (idle, blink, walkA, walkB, cheer)
 ├── tools/build_robot_sprites.py  # Rebuilds robot.png from the source sheet (Python + Pillow)
-├── server.js               # Optional Express backend for map persistence
+├── admin.html              # Admin panel (inline script): table of campaign results from /api/admin/results
+├── server.js               # Optional Express backend: maps, results, admin (Basic auth)
 ├── maps/                   # Saved custom maps (JSON)
+├── results/                # One JSON per campaign win, posted by sendResult() (gitignored)
 └── docs/tz.md              # Full specification document
 ```
 
@@ -90,13 +60,15 @@ Layering follows `ARCHITECTURE.md` (config → domain → view → UI):
 
 **Config (`config.js`)** — `validateSettings(raw)` returns clean `{ speed }` or throws `ConfigError` with a player-facing message. `game.js` catches it: in the settings modal the message is shown inline; broken stored settings fall back to defaults with a log entry.
 
-**Campaign (`levels.js`)** — `LEVELS` is a fixed list of 14 levels (maps drawn with `# . S F T C`). `getLevel(n)` parses the map and adds rules: `maxLines` (line limit for ⭐⭐⭐, levels 5+), `allowRepeat` (n ≥ 5), `allowNesting` (n ≥ 10), `intro` (one-time explainer). Levels 2–4 were produced by the generator and frozen as maps. Every level has a reference solution in `tests/levels.test.js` that must reach the finish on the shortest path, avoid traps and fit `maxLines` exactly — **changing a map or limit means updating that solution**.
+**Campaign (`levels.js`)** — `LEVELS` is a fixed list of 14 levels (maps drawn with `# . S F T C`). `getLevel(n)` parses the map and adds rules: `maxLines` (line limit for ⭐⭐⭐, levels 5+), `allowRepeat` (n ≥ 5), `allowNesting` (n ≥ 10), `intro` (one-time explainer). Design rule: every level has a choice of routes and the cheapest one is not the obvious one — decoys are a longer straight corridor, a route that is shorter in cells but crosses traps, or a coin detour. Levels 1–4 are generator output frozen as maps (seeds in the file header). Every level has a reference solution in `tests/levels.test.js` that must cost exactly the trap-aware optimum (`cheapestPath`), never step on a trap and fit `maxLines` exactly — **changing a map or limit means updating that solution**.
 
 **Player code (`program.js`)** — `compileProgram(source, { allowRepeat, allowNesting })` → `{ steps, lines, error }`. Grammar: one statement per line; `hero.cmd();`, `repeat(N) {` (N 1–20), `}`; `//` comments anywhere. Loops are unrolled into `steps` (each keeps `lineIndex` and `loops: [{ lineIndex, iteration, times }]`), capped at `MAX_STEPS`. `countCodeLines()` = non-blank, non-comment lines (braces count). `simulateSteps(level, steps)` dry-runs with trap penalties.
 
 **Domain (`maze.js`)** — mazes are square 2D arrays (`1` wall, `0` path), any size 5–25.
-- `generateMaze(size, rng)`: iterative recursive backtracker + a `loopFactor` share of extra openings (odd sizes only), seeded by `createRng()` (mulberry32). Not used at runtime by the campaign — it's the tool that produced levels 2–4.
-- `bfs(maze, sx, sy, ex, ey)` → direction names or `null`; `bfsSearch()` also returns `explored` order and distances.
+- `generateMaze(size, rng)`: iterative recursive backtracker + a `loopFactor` share of extra openings (odd sizes only), seeded by `createRng()` (mulberry32). Not used at runtime by the campaign — it's the tool that produced levels 1–4.
+- `bfs(maze, sx, sy, ex, ey)` → direction names or `null`; `bfsSearch()` also returns `explored` order and distances. Ignores traps — used by the demo solvers only.
+- `cheapestPath(maze, sx, sy, ex, ey, traps, penalty)` → `{ moves, cost }`: entering a trap costs `1 + TRAP_PENALTY` (bucket-queue Dijkstra via `costToTarget()`). This is the game's notion of "shortest": `optimalSteps`, hints and level tests use it.
+- `analyzeRoute(level, route, penalty)` compares a walked route with the cheapest one → `{ steps, optimal, bestMoves, extra, trapsHit, revisits, firstDetour, … }` (feeds the victory report).
 - Solver strategies in `SOLVERS` (`bfs`, `dfs`, `rightHand`): `solve(maze, start, finish)` → `{ moves, explored, solved, reason? }`. The right-hand rule detects repeated (cell, heading) states and reports a loop instead of hanging.
 - `normalizeMap()` makes legacy maps (15-row, `[x, y]` items) usable.
 
@@ -114,9 +86,10 @@ Layering follows `ARCHITECTURE.md` (config → domain → view → UI):
 | `initGame()` | Build the current level (`customLevel` or `getLevel`), resize the canvas, reset hero/timer, show intro |
 | `executeCode()` | `compileProgram()` the whole code, then run the unrolled steps with `settings.speed` ms delays; gutter shows loop iterations |
 | `winLevel()` / `calcStars(lines)` | Stars by steps vs `optimalSteps`, capped at 2 if over `maxLines`; `recordVictory()` saves progress |
+| `buildRunReport(lines)` / `drawReportMap()` | Victory report: verdict, first detour (step + code line + better direction), traps, revisits, line limit; mini map with the hero's route (solid) over the cheapest route (dashed). Needs `gameState.route`, recorded per move in `executeCode()` |
 | `runDemo()` | Auto-solve with the selected `SOLVERS` strategy: animate `explored`, then walk `moves` |
 | `movePlayer(dx, dy)` | Move hero, throw on wall/bounds (with shake), apply traps/coins |
-| `generateHint()` | `simulateProgram()` the current code, BFS from where it ends, append ≤5 commands |
+| `generateHint()` | `simulateSteps()` the current code, `cheapestPath()` from where it ends, append ≤5 commands |
 | `saveSettings()` / `loadSettings()` | Settings modal ↔ `validateSettings()` ↔ localStorage `'settings'` |
 | `startCustomLevel(data)` | Play a map from the editor or server (normalized, kept in localStorage) |
 
@@ -138,16 +111,19 @@ Layering follows `ARCHITECTURE.md` (config → domain → view → UI):
 
 ## Backend API (Optional)
 
-The optional Express backend (`server.js`) provides REST endpoints for persistent map storage. Only required if custom map creation/loading features are implemented in the frontend.
+`server.js` stores everything as one JSON file per record (no database). It serves **only a whitelist**: `/` + `/index.html`, `/styles`, `/scripts`, `/assets/robot`. A new static directory or page works under `python3 -m http.server` but 404s under `npm start` until you add it to `server.js`.
 
 ### Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/api/maps` | List all saved maps (sorted by creation date, newest first) |
-| `GET` | `/api/maps/:id` | Fetch full data for a specific map |
-| `POST` | `/api/maps` | Save a new map; returns map metadata with timestamp |
-| `DELETE` | `/api/maps/:id` | Delete a map by ID |
+| `GET` | `/api/maps` | List saved maps (`id`, `name`, `createdAt`), newest first |
+| `GET` | `/api/maps/:id` | Full map; `id` must match `/^map_\d+$/` (path-traversal guard) |
+| `POST` | `/api/maps` | Save a map after `validateMap()`; returns metadata |
+| `DELETE` | `/api/maps/:id` | Delete a map |
+| `POST` | `/api/results` | Campaign win from `sendResult()` in `game.js` (skipped for custom maps); validated by `validateResult()` |
+| `GET` | `/api/admin/results` | All results, newest first. Basic auth `admin:$ADMIN_PASSWORD` |
+| `GET` | `/admin` | Serves `admin.html`. Same auth |
 
 ### Map Data Structure
 
@@ -162,20 +138,13 @@ Maps are stored as JSON files in `maps/` directory with this structure:
   "startY": 1,
   "finishX": 10,
   "finishY": 3,
-  "traps": [[3,4], [5,6]],
-  "coins": [[2,3], [4,5]],
+  "traps": ["3,4", "5,6"],
+  "coins": ["2,3", "4,5"],
   "createdAt": "2026-04-23T21:29:32.592Z"
 }
 ```
 
-### Running the Backend
-
-```bash
-npm install  # Install Express dependency
-npm start    # Starts server on port 3000
-```
-
-Backend is completely optional — game functions without it using only browser-based gameplay.
+Traps and coins are `"x,y"` strings, which `validateMap()` requires. Older maps that use `[x, y]` pairs are converted by `normalizeMap()` on load. `name` can be at most 40 characters.
 
 ## Development Guidelines
 
@@ -212,11 +181,11 @@ Backend is completely optional — game functions without it using only browser-
 
 **Runs always start from start:** `executeCode()` and `runDemo()` call `resetHero()`, restoring `initialTraps`/`initialCoins`.
 
-**Victory:** `hero.finish()` on the finish tile, or the program ends on it. Stars compare steps (incl. trap penalties) with `optimalSteps`; over `maxLines` caps at 2. Demo runs and custom maps never change campaign progress. After level 14 the campaign-complete screen offers a restart (best stars kept).
+**Victory:** `hero.finish()` on the finish tile, or the program ends on it. Stars compare steps (incl. trap penalties) with `optimalSteps` (trap-aware, see `cheapestPath`); over `maxLines` caps at 2. The victory modal is a run report (see `buildRunReport`). Demo runs and custom maps never change campaign progress. After level 14 the campaign-complete screen offers a restart (best stars kept).
 
 ## Important Implementation Details
 
-**Hints:** `generateHint()` dry-runs the current code with `simulateProgram()` and runs BFS from where the code ends, so hints continue the existing program.
+**Hints:** `generateHint()` dry-runs the current code with `simulateSteps()` and runs `cheapestPath()` from where the code ends, so hints continue the existing program and walk around traps.
 
 **Stopping runs:** every run captures `runId`; `stopExecution()`/`initGame()` bump it so a run waiting on its delay exits (`isCurrentRun()`).
 
@@ -228,7 +197,7 @@ Backend is completely optional — game functions without it using only browser-
 
 - **Only `repeat`:** no conditions or variables in the player language
 - **Progress is per browser:** players live in localStorage, not on the server
-- **No leaderboard:** No persistent storage of scores
+- **No leaderboard:** wins are saved on the server in `results/`, but only the admin panel shows them. Players can't see them in the game.
 - **Mobile editing:** Mobile keyboards may be awkward for code entry
 - **Right-hand rule on braided mazes:** may fail by design (loops) — shown as a teaching point in the demo
 

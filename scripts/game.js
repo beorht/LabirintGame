@@ -13,6 +13,7 @@ const IDLE_FRAME_MS = 50;       // idle breathing/blinking repaints at ~20 fps, 
 const MAX_LOG_ENTRIES = 200;
 const DEMO_MAX_WALK_MS = 20000;         // long solver walks are sped up to fit this
 const MAX_NAME_LENGTH = 20;
+const REPORT_MAP_PX = 260;      // mini map in the victory report
 const PLAYERS_KEY = 'mazeQuestPlayers';
 const CURRENT_PLAYER_KEY = 'mazeQuestPlayer';
 
@@ -63,6 +64,7 @@ const gameState = {
     initialTraps: [],           // layout restored on every run / reset
     initialCoins: [],
     visited: new Set(),         // hero trail
+    route: [],                  // cells entered this run, in order: { x, y, lineIndex }
     optimalSteps: 0,
     hintsUsed: 0,
     isRunning: false,
@@ -115,7 +117,8 @@ function initDOM() {
         'finishModal', 'finishTitle', 'finishStars', 'finishGrid', 'finishRestartBtn', 'finishSwitchBtn',
         'settingsModal', 'settingSpeed', 'settingSpeedValue', 'settingsMessage',
         'settingsSaveBtn', 'settingsCancelBtn',
-        'modalSteps', 'modalOptimal', 'modalTime', 'modalCoins', 'modalLines', 'modalStars', 'modalNote',
+        'modalSteps', 'modalOptimal', 'modalTime', 'modalCoins', 'modalLines', 'modalStars',
+        'reportCanvas', 'reportVerdict', 'reportList', 'reportLegendDetour',
         'nextLevelButton', 'restartButton', 'startGameButton'
     ].forEach(id => { dom[id] = document.getElementById(id); });
 
@@ -350,8 +353,10 @@ function initGame() {
     gameState.initialTraps = [...level.traps];
     gameState.initialCoins = [...level.coins];
 
-    const bestPath = bfs(gameState.maze, gameState.startX, gameState.startY, gameState.finishX, gameState.finishY);
-    gameState.optimalSteps = bestPath ? bestPath.length : 0;
+    // Traps count: a clean detour can be shorter than the straight way over a trap
+    const best = cheapestPath(gameState.maze, gameState.startX, gameState.startY,
+        gameState.finishX, gameState.finishY, gameState.initialTraps, TRAP_PENALTY);
+    gameState.optimalSteps = best ? best.cost : 0;
 
     resizeBoardView(boardView, gameState.maze.length);
     buildBoardLayer(boardView, gameState);
@@ -374,6 +379,7 @@ function resetHero() {
     gameState.traps = new Set(gameState.initialTraps);
     gameState.coinCells = new Set(gameState.initialCoins);
     gameState.visited = new Set([cellKey(gameState.startX, gameState.startY)]);
+    gameState.route = [];
     fx.moveFrom = null;
     fx.facing = 'right';
     fx.faceLeft = false;
@@ -830,6 +836,7 @@ async function executeCode() {
                 outcome = 'victory';
                 break;
             }
+            gameState.route.push({ x: gameState.playerX, y: gameState.playerY, lineIndex: step.lineIndex });
             addLog(describeStep(step, i), 'success');
         } catch (err) {
             reportError(step.lineIndex, err.message);
@@ -984,17 +991,115 @@ function winLevel() {
     stopTimer();
     const lines = countCodeLines(dom.codeEditor.value);
     const stars = calcStars(lines);
+    const report = buildRunReport(lines);
     recordVictory(stars);
     sendResult(stars);
+    addLog(`Отчёт: ${report.verdict}`, report.extra === 0 ? 'success' : 'info');
+    report.findings.forEach(({ type, text }) => { if (type !== 'good') addLog(text, 'info'); });
     fx.cheerStart = performance.now();
     requestRender();
     spawnParticles(gameState.finishX, gameState.finishY, CONFETTI_COLORS, 90, {
         speed: boardView.cellSize * 6.4, gravity: 420, life: 1500
     });
-    setTimeout(() => showVictoryModal(stars, lines), reducedMotion.matches ? 0 : 650);
+    setTimeout(() => showVictoryModal(stars, lines, report), reducedMotion.matches ? 0 : 650);
 }
 
-function showVictoryModal(stars, lines) {
+// ---------- Run report ----------
+
+const DIRECTION_NAMES = { up: 'вверх', down: 'вниз', left: 'влево', right: 'вправо' };
+const STEP_WORDS = ['шаг', 'шага', 'шагов'];
+const TRAP_WORDS = ['ловушка', 'ловушки', 'ловушек'];
+
+// Russian plural form: plural(5, STEP_WORDS) → 'шагов'
+function plural(n, [one, few, many]) {
+    const mod10 = n % 10;
+    const mod100 = n % 100;
+    if (mod10 === 1 && mod100 !== 11) return one;
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
+    return many;
+}
+
+function movesToCells([x, y], moves) {
+    const cells = [[x, y]];
+    for (const dir of moves) {
+        x += MOVES[dir][0];
+        y += MOVES[dir][1];
+        cells.push([x, y]);
+    }
+    return cells;
+}
+
+// Compares the finished run with the cheapest route: a verdict plus what to improve
+function buildRunReport(lines) {
+    const level = { ...gameState, traps: gameState.initialTraps, coins: gameState.initialCoins };
+    const report = analyzeRoute(level, gameState.route, TRAP_PENALTY);
+    const { maxLines } = gameState.levelInfo;
+    const cellsDiff = report.moves - report.bestMoves.length;
+    const findings = [];
+
+    if (report.firstDetour >= 0) {
+        const from = report.firstDetour
+            ? gameState.route[report.firstDetour - 1]
+            : { x: gameState.startX, y: gameState.startY };
+        const better = cheapestPath(gameState.maze, from.x, from.y, gameState.finishX, gameState.finishY,
+            gameState.initialTraps, TRAP_PENALTY);
+        const line = gameState.route[report.firstDetour].lineIndex + 1;
+        findings.push({
+            type: 'detour',
+            text: `Шаг ${report.firstDetour + 1} (строка ${line}) увёл с кратчайшего пути — отсюда лучше было идти ${DIRECTION_NAMES[better.moves[0]]}.`
+        });
+    }
+    if (report.trapsHit) {
+        const traps = `${report.trapsHit} ${plural(report.trapsHit, TRAP_WORDS)}`;
+        findings.push({
+            type: 'trap',
+            text: cellsDiff < 0
+                ? `По клеткам ваш путь короче на ${-cellsDiff}, но ${traps} ${report.trapsHit === 1 ? 'добавила' : 'добавили'} +${report.trapPenalty} — обход выгоднее.`
+                : `${traps}: +${report.trapPenalty} ${plural(report.trapPenalty, STEP_WORDS)} штрафа.`
+        });
+    }
+    if (cellsDiff > 0) {
+        findings.push({ type: 'extra', text: `Лишние клетки: +${cellsDiff} — маршрут делает крюк.` });
+    }
+    if (report.revisits) {
+        findings.push({
+            type: 'extra',
+            text: `Повторно пройдено клеток: ${report.revisits} — похоже на тупик или ход туда-обратно.`
+        });
+    }
+    if (maxLines && lines > maxLines) {
+        findings.push({
+            type: 'code',
+            text: `Код: ${lines} строк при лимите ${maxLines} — сверните повторы в repeat, чтобы получить ⭐⭐⭐.`
+        });
+    }
+    if (!findings.length) findings.push({ type: 'good', text: 'Ни одного лишнего шага и ни одной лишней строки.' });
+
+    const verdict = report.extra === 0
+        ? '✓ Кратчайший путь найден!'
+        : `Путь длиннее кратчайшего на ${report.extra} ${plural(report.extra, STEP_WORDS)}`;
+    return { ...report, verdict, findings };
+}
+
+// Mini map: the level, the cheapest route (dashed) and the hero's route on top
+function drawReportMap(report) {
+    const view = createBoardView(dom.reportCanvas, REPORT_MAP_PX);
+    resizeBoardView(view, gameState.maze.length);
+    dom.reportCanvas.style.width = `${view.size}px`;
+    const { ctx: c, cellSize: cs } = view;
+    const start = [gameState.startX, gameState.startY];
+
+    drawStaticBoard(c, cs, gameState);
+    drawItems(c, cs, gameState.initialTraps, gameState.initialCoins);
+    drawRouteLine(c, cs, movesToCells(start, report.bestMoves), palette.finish, { dashed: true, width: 0.26 });
+    drawRouteLine(c, cs, [start, ...gameState.route.map(cell => [cell.x, cell.y])], palette.player, { width: 0.16 });
+    if (report.firstDetour >= 0) {
+        const cell = gameState.route[report.firstDetour];
+        drawCellRing(c, cs, cell.x, cell.y, palette.trap);
+    }
+}
+
+function showVictoryModal(stars, lines, report) {
     const { maxLines } = gameState.levelInfo;
     dom.modalSteps.textContent = gameState.steps;
     dom.modalOptimal.textContent = gameState.optimalSteps;
@@ -1003,10 +1108,16 @@ function showVictoryModal(stars, lines) {
     dom.modalLines.textContent = maxLines ? `${lines} / ${maxLines}` : lines;
     [...dom.modalStars.children].forEach((star, i) => star.classList.toggle('earned', i < stars));
 
-    const notes = [];
-    if (gameState.steps > gameState.optimalSteps) notes.push('Есть путь короче — попробуйте найти его.');
-    if (maxLines && lines > maxLines) notes.push(`Уложитесь в ${maxLines} строк с помощью repeat — и получите ⭐⭐⭐.`);
-    dom.modalNote.textContent = notes.join(' ');
+    dom.reportVerdict.textContent = report.verdict;
+    dom.reportVerdict.classList.toggle('best', report.extra === 0);
+    dom.reportList.replaceChildren(...report.findings.map(({ type, text }) => {
+        const item = document.createElement('li');
+        item.className = `report-item ${type}`;
+        item.textContent = text;
+        return item;
+    }));
+    dom.reportLegendDetour.hidden = report.firstDetour < 0;
+    drawReportMap(report);
 
     const isLast = !gameState.customLevel && gameState.level >= LEVELS.length;
     dom.nextLevelButton.textContent = gameState.customLevel ? 'К кампании' : isLast ? '🏆 Завершить' : 'Следующий уровень';
@@ -1120,7 +1231,9 @@ function generateHint() {
         return;
     }
 
-    const path = bfs(gameState.maze, end.x, end.y, gameState.finishX, gameState.finishY);
+    const best = cheapestPath(gameState.maze, end.x, end.y, gameState.finishX, gameState.finishY,
+        gameState.initialTraps, TRAP_PENALTY);
+    const path = best && best.moves;
     if (!path) {
         showMessage('Нет пути до финиша', 'error');
         addLog('Нет пути до финиша', 'error');

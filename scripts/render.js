@@ -184,6 +184,36 @@ function drawTrail(c, cs, visited) {
     c.globalAlpha = 1;
 }
 
+// Line through the centres of cells ([x, y] pairs, in walking order)
+function drawRouteLine(c, cs, cells, color, { dashed = false, width = 0.2 } = {}) {
+    if (cells.length < 2) return;
+    c.save();
+    c.strokeStyle = color;
+    c.lineWidth = Math.max(2, cs * width);
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    if (dashed) c.setLineDash([cs * 0.32, cs * 0.26]);
+    c.beginPath();
+    cells.forEach(([x, y], i) => {
+        const px = x * cs + cs / 2;
+        const py = y * cs + cs / 2;
+        if (i) c.lineTo(px, py);
+        else c.moveTo(px, py);
+    });
+    c.stroke();
+    c.restore();
+}
+
+function drawCellRing(c, cs, x, y, color) {
+    c.save();
+    c.strokeStyle = color;
+    c.lineWidth = Math.max(2, cs * 0.12);
+    c.beginPath();
+    c.arc(x * cs + cs / 2, y * cs + cs / 2, cs * 0.46, 0, Math.PI * 2);
+    c.stroke();
+    c.restore();
+}
+
 function drawHero(c, cx, cy, cs, facing, image) {
     c.fillStyle = 'rgba(0, 0, 0, 0.18)';
     c.beginPath();

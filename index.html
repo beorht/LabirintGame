@@ -208,6 +208,7 @@
                 <div class="tutorial-text">
                     Напишите команды для управления героем. Дойдите до финиша 🚩 и вызовите <code>hero.finish()</code>.
                     Программа всегда запускается со старта. Впереди 14 уровней — пройдите их по порядку.
+                    ⭐⭐⭐ дают только за самый короткий путь — после победы отчёт покажет, где можно было срезать.
                 </div>
             </div>
 
@@ -249,34 +250,47 @@
 
     <!-- Victory Modal -->
     <div class="overlay hidden" id="victoryModal">
-        <div class="modal-card victory-content">
+        <div class="modal-card victory-content report-content">
             <div class="modal-title">🎉 Победа!</div>
             <div class="stars" id="modalStars">
                 <span class="star">★</span><span class="star">★</span><span class="star">★</span>
             </div>
-            <div class="modal-stats">
-                <div class="modal-stat-item">
-                    <span>Шаги</span>
-                    <span id="modalSteps">0</span>
-                </div>
-                <div class="modal-stat-item">
-                    <span>Лучший путь</span>
-                    <span id="modalOptimal">0</span>
-                </div>
-                <div class="modal-stat-item">
-                    <span>Время</span>
-                    <span id="modalTime">0:00</span>
-                </div>
-                <div class="modal-stat-item">
-                    <span>Монеты</span>
-                    <span id="modalCoins">0</span>
-                </div>
-                <div class="modal-stat-item">
-                    <span>Строк кода</span>
-                    <span id="modalLines">0</span>
+            <div class="report-verdict" id="reportVerdict"></div>
+            <div class="report">
+                <figure class="report-map">
+                    <canvas id="reportCanvas" role="img" aria-label="Ваш путь и кратчайший путь на карте уровня"></canvas>
+                    <figcaption class="report-legend">
+                        <span><i class="legend-line yours"></i>ваш путь</span>
+                        <span><i class="legend-line best"></i>кратчайший</span>
+                        <span class="report-legend-detour" id="reportLegendDetour"><i class="legend-ring"></i>ошибка</span>
+                    </figcaption>
+                </figure>
+                <div class="report-body">
+                    <div class="modal-stats">
+                        <div class="modal-stat-item">
+                            <span>Шаги</span>
+                            <span id="modalSteps">0</span>
+                        </div>
+                        <div class="modal-stat-item">
+                            <span>Кратчайший путь</span>
+                            <span id="modalOptimal">0</span>
+                        </div>
+                        <div class="modal-stat-item">
+                            <span>Время</span>
+                            <span id="modalTime">0:00</span>
+                        </div>
+                        <div class="modal-stat-item">
+                            <span>Монеты</span>
+                            <span id="modalCoins">0</span>
+                        </div>
+                        <div class="modal-stat-item">
+                            <span>Строк кода</span>
+                            <span id="modalLines">0</span>
+                        </div>
+                    </div>
+                    <ul class="report-list" id="reportList"></ul>
                 </div>
             </div>
-            <div class="modal-note" id="modalNote"></div>
             <div class="modal-buttons">
                 <button class="btn-primary" id="nextLevelButton">Следующий уровень</button>
                 <button class="btn-tertiary" id="restartButton">Заново</button>

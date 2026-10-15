@@ -1,8 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { LEVELS, getLevel, REPEAT_LEVEL, NESTING_LEVEL } = require('../scripts/levels.js');
-const { compileProgram, simulateSteps } = require('../scripts/program.js');
-const { bfs } = require('../scripts/maze.js');
+const { compileProgram, simulateSteps, TRAP_PENALTY } = require('../scripts/program.js');
+const { cheapestPath, MOVES, cellKey } = require('../scripts/maze.js');
 
 // Reference 3-star solutions. They live in the tests, not in the game.
 const loop = (n, ...body) => [`repeat(${n}) {`, ...body, '}'];
@@ -15,7 +15,7 @@ const SOLUTIONS = {
     7: loop(8, cmd('right'), cmd('down')),
     8: loop(8, cmd('right'), cmd('down')),
     9: [...loop(8, cmd('right')), ...loop(8, cmd('down')), ...loop(8, cmd('left')), ...loop(6, cmd('up')),
-        ...loop(6, cmd('right')), ...loop(4, cmd('down')), ...loop(4, cmd('left')), ...times(2, 'up'), ...times(2, 'right')],
+        ...loop(6, cmd('right')), ...loop(4, cmd('down')), ...loop(3, cmd('left')), ...times(2, 'up'), cmd('right')],
     10: [...loop(2, ...loop(7, cmd('down')), ...times(2, 'right'), ...loop(7, cmd('up')), ...times(2, 'right')),
         ...loop(7, cmd('down'))],
     11: loop(3, ...loop(4, cmd('right')), ...loop(4, cmd('down'))),
@@ -26,9 +26,11 @@ const SOLUTIONS = {
         ...loop(2, ...times(2, 'left'), ...loop(7, cmd('up')), ...times(2, 'left'), ...loop(7, cmd('down')))]
 };
 
-// Levels 1–4: the shortest path written out command by command
+const best = level => cheapestPath(level.maze, level.startX, level.startY, level.finishX, level.finishY, level.traps, TRAP_PENALTY);
+
+// Levels 1–4: the cheapest path written out command by command
 function explicitSolution(level) {
-    return bfs(level.maze, level.startX, level.startY, level.finishX, level.finishY).map(cmd);
+    return best(level).moves.map(cmd);
 }
 
 test('there are 14 levels', () => {
@@ -61,8 +63,17 @@ for (let n = 1; n <= LEVELS.length; n++) {
         const run = simulateSteps(level, program.steps);
         assert.equal(run.error, null, run.error && run.error.message);
         assert.ok(run.finished, 'solution reaches the finish');
-        const optimal = bfs(level.maze, level.startX, level.startY, level.finishX, level.finishY).length;
-        assert.equal(run.steps, optimal, 'shortest path without traps');
+        const optimal = best(level).cost;
+        assert.equal(run.steps, optimal, 'cheapest path (traps count +5)');
+
+        // Traps are decoys: the cheapest route walks around all of them
+        let x = level.startX;
+        let y = level.startY;
+        for (const dir of best(level).moves) {
+            x += MOVES[dir][0];
+            y += MOVES[dir][1];
+            assert.ok(!level.traps.includes(cellKey(x, y)), `cheapest route steps on trap ${x},${y}`);
+        }
         if (level.maxLines) {
             assert.equal(program.lines, level.maxLines, 'limit equals the reference solution length');
             // Writing it without loops must not fit the limit — otherwise the loop isn't needed

@@ -144,6 +144,99 @@ function bfs(maze, startX, startY, endX, endY) {
     return bfsSearch(maze, startX, startY, endX, endY).path;
 }
 
+// ---------- Cheapest route (traps count) ----------
+// Stepping onto a trap costs 1 + penalty. A trap fires once, but a cheapest route never
+// revisits a cell, so pricing every entry is exact. Bucket queue: costs are small integers.
+
+// Cost of every cell to reach the target: dist[y][x] = cheapest steps from (x, y) to (endX, endY)
+function costToTarget(maze, endX, endY, traps = [], penalty = 0) {
+    const trapSet = new Set(traps);
+    const enterCost = (x, y) => 1 + (trapSet.has(cellKey(x, y)) ? penalty : 0);
+    const dist = createGrid(mazeSize(maze), Infinity);
+    const buckets = [[[endX, endY]]];
+    dist[endY][endX] = 0;
+    for (let c = 0; c < buckets.length; c++) {
+        for (const [x, y] of buckets[c] || []) {
+            if (dist[y][x] !== c) continue;
+            // Walking backwards: moving from (nx, ny) into (x, y) costs entering (x, y)
+            const step = enterCost(x, y);
+            for (const dir of CLOCKWISE) {
+                const nx = x + MOVES[dir][0];
+                const ny = y + MOVES[dir][1];
+                if (!isOpen(maze, nx, ny) || c + step >= dist[ny][nx]) continue;
+                dist[ny][nx] = c + step;
+                (buckets[c + step] ||= []).push([nx, ny]);
+            }
+        }
+    }
+    return { dist, enterCost };
+}
+
+// Cheapest route as { moves, cost }, or null if the target is unreachable
+function cheapestPath(maze, startX, startY, endX, endY, traps = [], penalty = 0) {
+    if (!isOpen(maze, endX, endY)) return null;
+    const { dist, enterCost } = costToTarget(maze, endX, endY, traps, penalty);
+    if (dist[startY][startX] === Infinity) return null;
+    const moves = [];
+    let x = startX;
+    let y = startY;
+    while (x !== endX || y !== endY) {
+        const dir = CLOCKWISE.find(d => {
+            const nx = x + MOVES[d][0];
+            const ny = y + MOVES[d][1];
+            return isOpen(maze, nx, ny) && dist[ny][nx] + enterCost(nx, ny) === dist[y][x];
+        });
+        moves.push(dir);
+        x += MOVES[dir][0];
+        y += MOVES[dir][1];
+    }
+    return { moves, cost: dist[startY][startX] };
+}
+
+// Compares a walked route (cells after each move, in order) with the cheapest one.
+// firstDetour = index of the first move that did not lead along some cheapest route (-1 if none)
+function analyzeRoute(level, route, penalty = 0) {
+    const { maze, startX, startY, finishX, finishY } = level;
+    const { dist, enterCost } = costToTarget(maze, finishX, finishY, level.traps, penalty);
+    const trapSet = new Set(level.traps);
+    const coinSet = new Set(level.coins);
+    const seen = new Set([cellKey(startX, startY)]);
+    const trapsHit = new Set();
+    const coins = new Set();
+    let firstDetour = -1;
+    let revisits = 0;
+    let x = startX;
+    let y = startY;
+
+    route.forEach((cell, i) => {
+        const key = cellKey(cell.x, cell.y);
+        const fired = trapSet.has(key) && !trapsHit.has(key);
+        if (firstDetour < 0 && dist[y][x] !== enterCost(cell.x, cell.y) + dist[cell.y][cell.x]) firstDetour = i;
+        if (seen.has(key)) revisits++;
+        seen.add(key);
+        if (fired) trapsHit.add(key);
+        if (coinSet.has(key)) coins.add(key);
+        x = cell.x;
+        y = cell.y;
+    });
+
+    const best = cheapestPath(maze, startX, startY, finishX, finishY, level.traps, penalty);
+    const moves = route.length;
+    const steps = moves + trapsHit.size * penalty;
+    return {
+        steps,
+        moves,
+        optimal: best ? best.cost : 0,
+        bestMoves: best ? best.moves : [],
+        extra: best ? steps - best.cost : 0,
+        trapsHit: trapsHit.size,
+        trapPenalty: trapsHit.size * penalty,
+        revisits,
+        coins: coins.size,
+        firstDetour
+    };
+}
+
 // The reachable cell farthest from the start — a good finish for generated levels
 function farthestCell(maze, startX, startY) {
     const { distances } = bfsSearch(maze, startX, startY);
@@ -264,7 +357,7 @@ if (typeof module !== 'undefined') {
         MOVES, CLOCKWISE, SOLVERS,
         cellKey, parseKey, mazeSize, isInside, isBorder, isOpen,
         createGrid, createEmptyMaze, createRng, shuffle,
-        generateMaze, bfsSearch, bfs, farthestCell, normalizeMap,
+        generateMaze, bfsSearch, bfs, costToTarget, cheapestPath, analyzeRoute, farthestCell, normalizeMap,
         solveBfs, solveDfs, solveRightHand
     };
 }
